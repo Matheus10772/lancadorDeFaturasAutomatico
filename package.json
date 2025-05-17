@@ -1,0 +1,22 @@
+{
+  "name": "lancadorfaturaautomatico",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "author": "Matheus de Castro Oliveira",
+  "license": "MIT",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "csv-parser": "^3.2.0",
+    "dotenv": "^16.5.0",
+    "googleapis": "^148.0.0",
+    "telegraf": "^4.16.3"
+  }
+}
