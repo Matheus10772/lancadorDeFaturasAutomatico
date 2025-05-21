@@ -9,14 +9,16 @@ const dataDir: string = path.join(os.homedir(), process.env.INIT_DIR! );
 enum Banco {
     NUBANK,
     ITAU,
-    PICPAY
+    PICPAY,
+    NOSSOPAY,
+    BANCODOBRASIL
 }
 
 enum Enconding {
     UTF8
 }
 
-class fileReader {
+class CSVParser {
     private basePath: string;
     private separator: string;
     private encoding: Enconding;

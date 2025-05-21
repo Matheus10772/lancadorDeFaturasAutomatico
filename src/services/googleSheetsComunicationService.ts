@@ -168,16 +168,16 @@ class GoogleSheetsComunicationService {
     /**
  * Método para escrever dados em uma planilha do Google Sheets.
  */
-private async writeSheetData(sheets: any, spreadsheetId: string, range: string, values: any[][]) {
+private async writeSheetData(range: string, values: any[][]) {
     try {
-        const resource = {
-            values: values, // Array de arrays com os dados a serem escritos
-        };
+
         const response = await (await this.sheetsClient).spreadsheets.values.update({
-            spreadsheetId: spreadsheetId, // O ID da sua planilha
+            spreadsheetId: this.spreadsheetId, // O ID da sua planilha
             range: range,               // O intervalo onde escrever (ex: 'Sheet1!A1')
             valueInputOption: 'RAW',    // Como os dados são interpretados (RAW ou USER_ENTERED)
-            resource: resource,
+            requestBody: {
+                values: values,
+            },
         });
 
         console.log(`Células atualizadas: ${response.data.updatedCells}`);
@@ -191,7 +191,7 @@ private async writeSheetData(sheets: any, spreadsheetId: string, range: string, 
 }
 
 /**Método que faz uma interface que facilita o uso da API do google que faz a escrita na planilha do google.*/
-public async inserirInformacoesPlanilha(mes: string, ano: string, dadosPlanilhaFormatadosJSON: { pessoa: string, dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] }[]) {
+public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: { pessoa: string, dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] }[]) {
     for(let dado of dadosPlanilhaFormatadosJSON) {
         let pessoa: string = dado.pessoa;
         let dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = dado.dados;
@@ -202,10 +202,10 @@ public async inserirInformacoesPlanilha(mes: string, ano: string, dadosPlanilhaF
             let ano: string = dadoBanco.ano;
             let entradas: { estabelecimento: string, valor: number }[] = dadoBanco.entradas;
 
-            let range: string = getRangeForSheet(mes, ano, pessoa, banco);
+            let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
             let valoresParaEscrever: any[][] = entradas.map((entrada) => [entrada.estabelecimento, entrada.valor]);
 
-            await writeSheetData(sheetsClient, spreadsheetId, range, valoresParaEscrever);
+            await this.writeSheetData(range, valoresParaEscrever);
         }
     }
 }
