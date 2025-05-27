@@ -20,6 +20,12 @@ enum Enconding {
     UTF8
 }
 
+interface CSVRow {
+  Data: string;
+  Estabelecimento: string;
+  Valor: string;
+}
+
 class CSVParser {
     private basePath: string;
     private separator: string;
@@ -45,17 +51,19 @@ class CSVParser {
         }
     }
 
-    public async parseCSVtoJSON(banco: Banco, mes: string) {
-        const filePath = path.join(this.basePath, banco.toString(), `${mes}/faturaConvertida/fatura.csv`);
+    public async parseCSVtoJSON(banco: Banco, mes: string, ano: string): Promise<CSVRow[]> {
+        const filePath = path.join(this.basePath, banco.toString(), `${mes}${ano}/faturaConvertida/fatura.csv`);
         const fileStream = await this.getFileStream(filePath);
 
-        const results: any[] = [];
-        await fileStream
-            .pipe(csv({separator: ';', skipLines: this.csvSkipLines}))
+        
+        const results: CSVRow[] = [];
+        await new Promise<void>((resolve, reject) => {
+            fileStream
+            .pipe(csv({ separator: ';', skipLines: this.csvSkipLines }))
             .on('data', (data) => results.push(data))
-            .on('error', (error) => {
-                throw new Error(`Error parsing CSV: ${error}`);
-            });
+            .on('end', () => resolve())
+            .on('error', (error) => reject(new Error(`Error parsing CSV: ${error}`)));
+        });
         
         return results;
     }
@@ -105,5 +113,4 @@ class CSVParser {
 
 }
 
-export default CSVParser;
-export { Banco, Enconding };
+export { CSVParser ,Banco, Enconding, CSVRow };

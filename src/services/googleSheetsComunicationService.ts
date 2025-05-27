@@ -8,7 +8,23 @@ import os from 'os';
 // pode precisar de uma lib como 'dotenv' se não estiver em um ambiente que já as carrega (ex: alguns serviços cloud)
 import * as dotenv from 'dotenv';
 import { get } from 'http';
+import { Banco } from './loadAndParseCSVService';
 dotenv.config();
+
+
+interface sheetData { 
+    pessoa: string, 
+    dados: { 
+        banco: string, 
+        mes: string, 
+        ano: string, 
+        entradas: { 
+            estabelecimento: string, 
+            valor: number 
+        }[] 
+    }[] 
+}
+
 
 
 
@@ -91,16 +107,24 @@ class GoogleSheetsComunicationService {
     }
 
     /**Método que faz uma interface para facilitar o uso da API do google */
-    public async obterInformacoesPlanilha(mes: string, ano: string, pessoas?: string[]): Promise<{ pessoa: string, dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] }[]> {
-        let dadosPlanilhaFormatadosJSON: { pessoa: string, dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] }[] = [];
+    public async obterInformacoesPlanilha(mes: string, ano: string, banco?: Banco[], pessoas?: string[]): Promise<sheetData[]> {
+        let dadosPlanilhaFormatadosJSON: sheetData[] = [];
+        let listaDeBancos: string[];
 
-        if (!pessoas)
+        if (!pessoas || pessoas.length === 0) {
             pessoas = ['matheus', 'jhonatan'];
+        }
 
-        for (let pessoa in pessoas) {
+        if(!banco) {
+            listaDeBancos = this.listaDeBancos;
+        } else {
+            listaDeBancos = banco.map((banco) => {return banco.toString()});
+        }
+
+        for (let pessoa of pessoas) {
             let dadosPorPessoa: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = [];
 
-            for (let banco of this.listaDeBancos) {
+            for (let banco of listaDeBancos) {
                 let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
                 let dadosBrutos = await this.readSheetData(range);
                 let dadosBrutosFormatados: { estabelecimento: string, valor: number }[] = dadosBrutos.map((dado) => { return { estabelecimento: dado.coluna, valor: dado.value } });
@@ -118,11 +142,7 @@ class GoogleSheetsComunicationService {
                 pessoa: pessoa,
                 dados: dadosPorPessoa
             });
-
-
         }
-
-
 
         return dadosPlanilhaFormatadosJSON;
     }
@@ -214,3 +234,5 @@ public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: { pessoa: s
 
 
 }
+
+export { sheetData, GoogleSheetsComunicationService };
