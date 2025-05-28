@@ -27,6 +27,7 @@ const googleSheetsService: GoogleSheetsComunicationService = new GoogleSheetsCom
 let mes: string;
 let ano: string;
 let banco: Banco;
+let globalDataCSV: CSVRow[] = [];
 
 
 
@@ -271,6 +272,8 @@ bot.action('processarPlanilha', async (ctx) => {
 
 		}
 
+		globalDataCSV = dataCSV; // Armazena os dados CSV globalmente para uso posterior
+
 
 		if(dataCSV.length > 0) {
 			session.AguardandoCapturaDaProximaResposta = true;
@@ -280,6 +283,7 @@ bot.action('processarPlanilha', async (ctx) => {
 			ctx.reply(`Selecione o que fazer com a entrada\n${primeiraEntrada}`, Markup.inlineKeyboard([
 			[Markup.button.callback('Jhonatan', 'paraJhonatan')],
 			[Markup.button.callback('Matheus', 'paraMatheus')],
+			[Markup.button.callback('Dividir entre os 2', 'dividir')],
 			[Markup.button.callback('Cancelar', 'cancelarPRocessamento')],
 		]));
 		}
