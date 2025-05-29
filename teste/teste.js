@@ -30,7 +30,7 @@ async function parseCSVtoJSON(basePath) {
     });
 }
 
-console.log(parseCSVtoJSON('C:\\Users\\mathe\\Downloads\\extrator-picpay\\extrator-fatura-picpay\\extrator-fatura-picpay\\fatura_picpay_corrigida.csv'));
+console.log(parseCSVtoJSON('/home/matheusoliveira/Downloads/fatura_picpay_corrigida.csv'));
 
 
 // const google = require('googleapis').google;

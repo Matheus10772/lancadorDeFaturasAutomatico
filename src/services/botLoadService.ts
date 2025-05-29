@@ -28,6 +28,10 @@ let mes: string;
 let ano: string;
 let banco: Banco;
 let globalDataCSV: CSVRow[] = [];
+let currentCSVRow: CSVRow | null | undefined = null;
+
+let dadosJhonatan: { estabelecimento: string, valor: number }[] = [];
+let dadosMatheus: { estabelecimento: string, valor: number }[] = [];
 
 
 
@@ -155,7 +159,7 @@ bot.action(/^mes_(\w+)$/, async (ctx) => {
 
 bot.action('escolhaBanco', async (ctx) => {
 	await ctx.answerCbQuery(); // remove o loading
-	await ctx.reply('Escolha o Banco que deseja selecionar: ', Markup.inlineKeyboard(makeSequencButtons(listaDeBancos, 2)));
+	await ctx.reply('Escolha o Banco que deseja selecionar: ', Markup.inlineKeyboard(makeSequencButtons(listaDeBancos, 2)) );
 });
 
 bot.action(/^banco_(\w+)$/, async (ctx) => {
@@ -235,7 +239,7 @@ bot.action('processarPlanilha', async (ctx) => {
 	await ctx.answerCbQuery(); // remove o loading
 	await ctx.reply('Processando a planilha...');
 	const session = ctx.session as UserSessionData;
-	
+
 
 	try {
 		if (!banco || !mes || !ano) {
@@ -246,22 +250,22 @@ bot.action('processarPlanilha', async (ctx) => {
 		const dataCSV: CSVRow[] = await csvParser.parseCSVtoJSON(banco, mes, ano);
 		const dataGoogleSheets: sheetData[] = await googleSheetsService.obterInformacoesPlanilha(mes, ano, [banco]);
 
-		for(let pessoa of dataGoogleSheets) {
-			for(let dados of pessoa.dados) {
-				if(dados.banco !== banco.toString() || dados.mes !== mes || dados.ano !== ano)
+		for (let pessoa of dataGoogleSheets) {
+			for (let dados of pessoa.dados) {
+				if (dados.banco !== banco.toString() || dados.mes !== mes || dados.ano !== ano)
 					throw new Error('Banco, mês ou ano dos dados buscados não correspondem aos definidos pelo usuário.');
 
 				// Verifica se algum estabelecimento em dados.entradas existe em algum objeto de dataCSV
 				let elementoParaRemover: CSVRow = {} as CSVRow;
 				const existeEstabelecimento: boolean = dados.entradas.some(entrada =>
 					dataCSV.some(row => {
-						if(row.Estabelecimento === entrada.estabelecimento) {
+						if (row.Estabelecimento === entrada.estabelecimento) {
 							elementoParaRemover = row;
 							return true;
 						} else {
 							return false;
 						}
-						
+
 					})
 				);
 
@@ -275,37 +279,18 @@ bot.action('processarPlanilha', async (ctx) => {
 		globalDataCSV = dataCSV; // Armazena os dados CSV globalmente para uso posterior
 
 
-		if(dataCSV.length > 0) {
+		if (dataCSV.length > 0) {
 			session.AguardandoCapturaDaProximaResposta = true;
 			session.AcaoAnterior = 'processarEntrada';
-			const primeiraEntrada: CSVRow = dataCSV[0];
+			currentCSVRow = dataCSV.pop()!;
 
-			ctx.reply(`Selecione o que fazer com a entrada\n${primeiraEntrada}`, Markup.inlineKeyboard([
-			[Markup.button.callback('Jhonatan', 'paraJhonatan')],
-			[Markup.button.callback('Matheus', 'paraMatheus')],
-			[Markup.button.callback('Dividir entre os 2', 'dividir')],
-			[Markup.button.callback('Cancelar', 'cancelarPRocessamento')],
-		]));
-		}
 
-		for(let data of dataCSV) {
-			const { Data ,Estabelecimento, Valor } = data;
-			const valor: number = parseFloat(Valor.replace(',', '.') );
-
-			// Aqui eu chamo bot.action para cada entrada
-		}
-
-		interface sheetData {
-			pessoa: string,
-			dados: {
-				banco: string,
-				mes: string,
-				ano: string,
-				entradas: {
-					estabelecimento: string,
-					valor: number
-				}[]
-			}[]
+			ctx.reply(`Selecione o que fazer com a entrada\n${currentCSVRow}`, Markup.inlineKeyboard([
+				[Markup.button.callback('Jhonatan', 'paraJhonatan')],
+				[Markup.button.callback('Matheus', 'paraMatheus')],
+				[Markup.button.callback('Dividir entre os 2', 'dividir')],
+				[Markup.button.callback('Cancelar', 'cancelarPRocessamento')],
+			]));
 		}
 
 
@@ -315,6 +300,173 @@ bot.action('processarPlanilha', async (ctx) => {
 	} catch (error) {
 		console.error('Erro ao processar a planilha:', error);
 		await ctx.reply('❌ Erro ao processar a planilha. Por favor, tente novamente.');
+	}
+});
+
+function atribuirDadoParaPessoa(row: CSVRow, pessoa: string): { message: string, nextRow: CSVRow | null | undefined } {
+
+	let message: string = '';
+	let nextRow: CSVRow | null | undefined = null;
+	try {
+		const valor: number = parseFloat(row.Valor.replace(',', '.'));
+		const nomeEstabelecimento: string = row.Estabelecimento;
+		dadosJhonatan.push({ estabelecimento: nomeEstabelecimento, valor: valor });
+		message = `Entrada adicionada a ${pessoa}: ${nomeEstabelecimento} - R$ ${valor.toFixed(2)}`;
+		nextRow = globalDataCSV.pop(); // Pega a próxima entrada ou null se não houver mais
+
+
+	}
+
+	catch (error) {
+		dadosJhonatan = [];
+		dadosMatheus = [];
+		console.error(`Erro ao processar a entrada para ${pessoa}:`, error);
+	}
+
+	return { message, nextRow };
+}
+
+function dividirDado(row: CSVRow, pessoa: string[]): { message: string, nextRow: CSVRow | null | undefined } {
+
+	let message: string = '';
+	let nextRow: CSVRow | null | undefined = null;
+	try {
+		const valoresDivididos: number = parseFloat(row.Valor.replace(',', '.')) / pessoa.length;
+		const nomeEstabelecimento: string = row.Estabelecimento;
+
+		pessoa.forEach((pessoaNome) => {
+			if (pessoaNome.toLocaleLowerCase() === 'jhonatan') {
+				dadosJhonatan.push({ estabelecimento: nomeEstabelecimento+'(1/2)', valor: valoresDivididos });
+			} else if (pessoaNome.toLocaleLowerCase() === 'matheus') {
+				dadosMatheus.push({ estabelecimento: nomeEstabelecimento+'(1/2)', valor: valoresDivididos });
+			}
+			message = `Entrada adicionada a ${pessoaNome}: ${nomeEstabelecimento} - R$ ${valoresDivididos.toFixed(2)}`;
+		});
+		nextRow = globalDataCSV.pop(); // Pega a próxima entrada ou null se não houver mais
+
+	}
+
+	catch (error) {
+		dadosJhonatan = [];
+		dadosMatheus = [];
+		console.error(`Erro ao processar a entrada para as pessoas ${pessoa}:`, error);
+		throw new Error(`Erro ao processar a entrada. Por favor, tente novamente.`);
+	}
+
+	return { message, nextRow };
+}
+
+async function formatarEnviarParaGoogleSheets() {
+	if (dadosJhonatan.length > 0 || dadosMatheus.length > 0) {
+		try {
+			const entradasJhonatan = dadosJhonatan.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
+			const entradasMatheus = dadosMatheus.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
+
+			const dadosFormatados: sheetData[] = [{
+				pessoa: 'jhonatan',
+				dados: [
+					{
+						banco: banco.toString(),
+						mes: mes,
+						ano: ano,
+						entradas: entradasJhonatan
+					}
+				]
+			},
+			{
+				pessoa: 'matheus',
+				dados: [
+					{
+						banco: banco.toString(),
+						mes: mes,
+						ano: ano,
+						entradas: entradasMatheus
+					}
+				]
+			}];
+
+			await googleSheetsService.inserirInformacoesPlanilha(dadosFormatados);
+
+		} catch (error) {
+			throw new Error(`Erro ao formatar e enviar os dados para o Google Sheets: ${error}`);
+		}
+
+
+	} else {
+		throw new Error('Nenhuma entrada processada para enviar ao Google Sheets.');
+	}
+}
+
+function sendOptionsForEntry(ctx: any) {
+	const sequence: sequenceOfOptionsButtons[] = [
+		{ nome: 'Jhonatan', valor: 'paraJhonatan' },
+		{ nome: 'Matheus', valor: 'paraMatheus' },
+		{ nome: 'Dividir entre os 2', valor: 'dividir' },
+		{ nome: 'Cancelar', valor: 'cancelarProcessamento' }
+	];
+	ctx.reply(`Selecione o que fazer com a próxima entrada\n${currentCSVRow}` , Markup.inlineKeyboard( makeSequencButtons(sequence, 1) ) );
+}
+
+
+
+bot.action(/^para(.+)/, async (ctx) => { //atribuir entrada para uma pessoa
+	await ctx.answerCbQuery();
+	const session = ctx.session as UserSessionData;
+
+	// Captura o nome da pessoa a partir do callback (ex: 'Jhonatan' de 'paraJhonatan')
+	const pessoa = ctx.match[1]; // 'Jhonatan', 'Matheus', etc.
+
+	if (session.AcaoAnterior && currentCSVRow) {
+		const { message, nextRow } = atribuirDadoParaPessoa(currentCSVRow, pessoa);
+		currentCSVRow = nextRow;
+
+		await ctx.reply(message);
+
+		if (currentCSVRow) {
+			sendOptionsForEntry(ctx); // Envia nova opção para próxima entrada
+		} else {
+			session.AguardandoCapturaDaProximaResposta = false;
+			await formatarEnviarParaGoogleSheets(); // Formata e envia os dados para o Google Sheets
+
+			// Limpa os dados processados
+			dadosJhonatan = [];
+			dadosMatheus = [];
+
+			await ctx.reply('✅ Processamento concluído. Todas as entradas foram inseridas na planilha.');
+		}
+	}
+});
+
+bot.action('dividir', async (ctx) => { // dividir entrada entre os 2
+	await ctx.answerCbQuery();
+	const session = ctx.session as UserSessionData;
+
+	if (session.AcaoAnterior && currentCSVRow) {
+
+		try {
+			const { message, nextRow } = dividirDado(currentCSVRow, ['Jhonatan', 'Matheus']);
+			currentCSVRow = nextRow;
+
+			await ctx.reply(message);
+
+			if (currentCSVRow) {
+				sendOptionsForEntry(ctx); // Envia nova opção para próxima entrada
+			} else {
+				session.AguardandoCapturaDaProximaResposta = false;
+				await formatarEnviarParaGoogleSheets(); // Formata e envia os dados para o Google Sheets
+				// Limpa os dados processados
+				dadosJhonatan = [];
+				dadosMatheus = [];
+
+				await ctx.reply('✅ Processamento concluído. Todas as entradas foram inseridas na planilha.');
+			}
+		} catch (error) {
+			console.error('Erro ao dividir a entrada:', error);
+			session.AguardandoCapturaDaProximaResposta = false; // Reseta a flag após o erro
+			dadosJhonatan = [];
+			dadosMatheus = [];
+			await ctx.reply('❌ Erro ao processar a divisão da entrada. Por favor, tente novamente.');
+		}
 	}
 });
 

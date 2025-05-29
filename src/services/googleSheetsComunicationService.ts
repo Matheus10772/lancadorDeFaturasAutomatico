@@ -211,7 +211,7 @@ private async writeSheetData(range: string, values: any[][]) {
 }
 
 /**Método que faz uma interface que facilita o uso da API do google que faz a escrita na planilha do google.*/
-public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: { pessoa: string, dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] }[]) {
+public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: sheetData[]) {
     for(let dado of dadosPlanilhaFormatadosJSON) {
         let pessoa: string = dado.pessoa;
         let dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = dado.dados;
