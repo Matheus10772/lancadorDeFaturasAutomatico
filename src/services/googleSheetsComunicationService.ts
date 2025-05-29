@@ -25,6 +25,11 @@ interface sheetData {
     }[] 
 }
 
+interface rawSheetData { 
+    coluna: string, 
+    value: number 
+}
+
 
 
 
@@ -77,7 +82,7 @@ class GoogleSheetsComunicationService {
     /**
     * Método para ler dados de uma planilha do Google Sheets.
     */
-    private async readSheetData(range: string): Promise<{ coluna: string, value: number }[]> {
+    private async readSheetData(range: string): Promise<rawSheetData[]> {
         try {
             const response = await (await this.sheetsClient).spreadsheets.values.get({
                 spreadsheetId: this.spreadsheetId, // O ID da sua planilha

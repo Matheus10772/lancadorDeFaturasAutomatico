@@ -477,9 +477,6 @@ function removeElementFromArray<T>(array: T[], element: T) {
 	}
 }
 
-
-
-
 bot.launch();
 
 console.log('Bot started!');
