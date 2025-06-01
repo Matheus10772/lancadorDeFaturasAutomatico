@@ -5,15 +5,19 @@ import csv from 'csv-parser';
 import https from 'https';
 import Stream from 'stream';
 import { file } from 'googleapis/build/src/apis/file';
+import dotenv from 'dotenv';
+import { spawn } from 'child_process';
+
+dotenv.config();
 
 const dataDir: string = path.join(os.homedir(), process.env.INIT_DIR! );
 
 enum Banco {
-    NUBANK,
-    ITAU,
-    PICPAY,
-    NOSSOPAY,
-    BANCODOBRASIL
+    NUBANK = 'NUBANK',
+    ITAU = 'ITAU',
+    PICPAY = 'PICPAY',
+    NOSSOPAY = 'NOSSOPAY',
+    BANCODOBRASIL = 'BANCODOBRASIL'
 }
 
 enum Enconding {
@@ -23,7 +27,7 @@ enum Enconding {
 interface CSVRow {
   Data: string;
   Estabelecimento: string;
-  Valor: string;
+  Valor: number;
 }
 
 class CSVParser {
@@ -60,7 +64,13 @@ class CSVParser {
         await new Promise<void>((resolve, reject) => {
             fileStream
             .pipe(csv({ separator: ';', skipLines: this.csvSkipLines }))
-            .on('data', (data) => results.push(data))
+            .on('data', (data) => {
+                results.push({
+                    Data: data.Data,
+                    Estabelecimento: data.Estabelecimento,
+                    Valor: parseFloat((data['Valor (R$)']).replace(',', '.')) 
+                }) 
+            })
             .on('end', () => resolve())
             .on('error', (error) => reject(new Error(`Error parsing CSV: ${error}`)));
         });
@@ -110,6 +120,45 @@ class CSVParser {
     
             
     }
+
+    public getSeprator(): string {
+        return this.separator;
+    }
+
+    public setSeparator(separator: string): void {
+        this.separator = separator;
+    }
+
+    public converterFatura(inputArg: string, banco: Banco): string {
+
+        switch (banco) {
+            case Banco.NUBANK:
+                break;
+            case Banco.ITAU:
+                break;
+            case Banco.PICPAY:
+                break;
+            default:
+                break;
+        }
+        const processo = spawn('python3', ['script.py', inputArg]);
+
+        processo.stdout.on('data', (data) => {
+            console.log(`Saída: ${data}`);
+        });
+
+        processo.stderr.on('data', (data) => {
+            console.error(`Erro: ${data}`);
+        });
+
+        processo.on('close', (code) => {
+            console.log(`Processo encerrado com código ${code}`);
+        });
+
+        return '';
+    }
+
+
 
 }
 

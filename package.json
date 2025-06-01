@@ -4,13 +4,16 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --trace-warnings --respawn index.ts"
   },
   "author": "Matheus de Castro Oliveira",
   "license": "MIT",
   "description": "",
   "devDependencies": {
     "@types/node": "^22.15.18",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {

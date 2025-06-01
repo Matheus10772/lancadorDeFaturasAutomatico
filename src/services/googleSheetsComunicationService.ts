@@ -34,7 +34,7 @@ interface rawSheetData {
 
 
 class GoogleSheetsComunicationService {
-    private sheetsClient: Promise<sheets_v4.Sheets>;
+    //private sheetsClient: Promise<sheets_v4.Sheets>;
     private spreadsheetId: string;// Substitua pelo ID da sua planilha
     private listaDeBancos: string[];
 
@@ -50,7 +50,7 @@ class GoogleSheetsComunicationService {
     private SCOPES: string[];
 
     constructor() {
-        this.sheetsClient = this.authenticateServiceAccount();
+        //this.sheetsClient = this.authenticateServiceAccount();
         // Aguarda a autenticação ser concluída antes de prosseguir
         // (caso precise garantir em algum método, use: await this.sheetsClient)
         this.spreadsheetId = '1aGgr3I_xcFEKQGiwyTnxD97hEPWVWFlyoB8g29aFcVU'; // Substitua pelo ID da sua planilha
@@ -84,7 +84,7 @@ class GoogleSheetsComunicationService {
     */
     private async readSheetData(range: string): Promise<rawSheetData[]> {
         try {
-            const response = await (await this.sheetsClient).spreadsheets.values.get({
+            const response = await (await this.authenticateServiceAccount()).spreadsheets.values.get({
                 spreadsheetId: this.spreadsheetId, // O ID da sua planilha
                 range: range,               // O intervalo que você quer ler (ex: 'Sheet1!A1:D10')
             });
@@ -187,7 +187,7 @@ class GoogleSheetsComunicationService {
         }
 
         // Exemplo de como construir o range baseado em variáveis
-        return `${planilhaAlvo}!B${pessoaOffset + bancoOffset}:BI${pessoaOffset + bancoOffset}`; // Ex: 'Sheet1!A1:D10'
+        return `${planilhaAlvo}!B${pessoaOffset + bancoOffset}:BI${pessoaOffset + bancoOffset + 1}`; // Ex: 'Sheet1!A1:D10'
     }
 
     /**
@@ -196,7 +196,7 @@ class GoogleSheetsComunicationService {
 private async writeSheetData(range: string, values: any[][]) {
     try {
 
-        const response = await (await this.sheetsClient).spreadsheets.values.update({
+        const response = await (await this.authenticateServiceAccount()).spreadsheets.values.update({
             spreadsheetId: this.spreadsheetId, // O ID da sua planilha
             range: range,               // O intervalo onde escrever (ex: 'Sheet1!A1')
             valueInputOption: 'RAW',    // Como os dados são interpretados (RAW ou USER_ENTERED)
