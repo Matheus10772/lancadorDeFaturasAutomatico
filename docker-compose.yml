@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  lancador:
+    build: .
+    container_name: lancadorFatura-bot
+    env_file:
+      - .env
+    volumes:
+      - ./resources:/home/node/.lancadorDeFaturaAutomatico/resources
+      - /root/lancador-dados:/home/node/.lancadorDeFaturaAutomatico/data
+    restart: unless-stopped
