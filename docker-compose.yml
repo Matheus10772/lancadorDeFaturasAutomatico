@@ -2,11 +2,15 @@ version: '3.8'
 
 services:
   lancador:
-    build: .
-    container_name: lancadorFatura-bot
+    container_name: lancador-faturas
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      # Monta as pastas persistentes do host para o local esperado pela aplicação
+      - ./resources:/home/node/.lancadorDeFaturaAutomatico/resources
+      - ./faturas:/home/node/.lancadorDeFaturaAutomatico/faturas
     env_file:
       - .env
-    volumes:
-      - ./resources:/home/node/.lancadorDeFaturaAutomatico/resources
-      - /root/lancador-dados:/home/node/.lancadorDeFaturaAutomatico/data
     restart: unless-stopped

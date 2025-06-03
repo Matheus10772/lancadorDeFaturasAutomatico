@@ -1,23 +1,41 @@
-# Etapa 1: Build com TypeScript
-FROM node:18 AS builder
+# Etapa 1: Compilar o TypeScript
+FROM node:18-slim AS builder
 
+# Diretório de trabalho da aplicação
 WORKDIR /app
 
+# Copia arquivos essenciais
 COPY package*.json ./
+
+# Instala as dependências (com as de desenvolvimento)
 RUN npm install
 
-COPY . .
+# Copia o restante do código-fonte
+COPY tsconfig.json ./
+COPY src ./src
+
+# Compila TypeScript
 RUN npm run build
 
 # Etapa 2: Imagem leve para produção
-FROM node:18-alpine
+FROM node:18-slim
 
-WORKDIR /home/node/.lancadorDeFaturaAutomatico
+# Cria diretório persistente no local esperado pela aplicação
+RUN mkdir -p /home/node/.lancadorDeFaturaAutomatico/faturas \
+    && mkdir -p /home/node/.lancadorDeFaturaAutomatico/resources
 
-# Copia apenas os arquivos necessários
+# Diretório de execução
+WORKDIR /app
+
+# Copia os arquivos necessários da etapa de build
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package*.json ./
+
+# Instala apenas dependências de produção
 RUN npm install --omit=dev
 
-# Copia recursos adicionais no momento do deploy (via volume ou docker-compose)
+# Copia recursos necessários da máquina host (usados no docker-compose via volume)
+# A pasta resources será montada por volume no docker-compose
+
+# Comando de inicialização
 CMD ["node", "dist/index.js"]
