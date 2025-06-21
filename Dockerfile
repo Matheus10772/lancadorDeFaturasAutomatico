@@ -13,6 +13,7 @@ RUN npm install
 # Copia o restante do código-fonte
 COPY tsconfig.json ./
 COPY src ./src
+COPY index.ts ./
 
 # Compila TypeScript
 RUN npm run build

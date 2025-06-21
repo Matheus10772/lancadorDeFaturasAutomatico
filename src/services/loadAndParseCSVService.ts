@@ -56,7 +56,7 @@ class CSVParser {
     }
 
     public async parseCSVtoJSON(banco: Banco, mes: string, ano: string): Promise<CSVRow[]> {
-        const filePath = path.join(this.basePath, banco.toString(), `${mes}${ano}/faturaConvertida/fatura.csv`);
+        const filePath = path.join(this.basePath, banco.toString(), `${mes.toLowerCase()}${ano}/faturaConvertida/fatura.csv`);
         const fileStream = await this.getFileStream(filePath);
 
         

@@ -14,3 +14,5 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined

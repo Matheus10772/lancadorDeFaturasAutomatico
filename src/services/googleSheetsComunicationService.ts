@@ -89,16 +89,18 @@ class GoogleSheetsComunicationService {
                 range: range,               // O intervalo que você quer ler (ex: 'Sheet1!A1:D10')
             });
 
+            /**Se o intervalo selecionado estiver vazio, 'values' será 'undefined'. CORRIGIR ISSO */
             const rows = response.data.values;
 
             let rowsInJSON: { coluna: string, value: number }[] = [];
 
-
-            for (let row of rows!) {
-                rowsInJSON.push({
-                    coluna: row[0],
-                    value: Number(row[1])
-                });
+            if(rows && rows.length > 0) {
+                for (let row of rows) {
+                    rowsInJSON.push({
+                        coluna: row[0],
+                        value: Number(row[1])
+                    });
+                }
             }
 
             return rowsInJSON;
@@ -216,24 +218,33 @@ private async writeSheetData(range: string, values: any[][]) {
 }
 
 /**Método que faz uma interface que facilita o uso da API do google que faz a escrita na planilha do google.*/
-public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: sheetData[]) {
-    for(let dado of dadosPlanilhaFormatadosJSON) {
-        let pessoa: string = dado.pessoa;
-        let dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = dado.dados;
+    public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: sheetData[]) {
+        for (let dado of dadosPlanilhaFormatadosJSON) {
+            let pessoa: string = dado.pessoa;
+            let dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = dado.dados;
 
-        for(let dadoBanco of dados) {
-            let banco: string = dadoBanco.banco;
-            let mes: string = dadoBanco.mes;
-            let ano: string = dadoBanco.ano;
-            let entradas: { estabelecimento: string, valor: number }[] = dadoBanco.entradas;
+            for (let dadoBanco of dados) {
+                let banco: string = dadoBanco.banco;
+                let mes: string = dadoBanco.mes;
+                let ano: string = dadoBanco.ano;
+                let entradas: { estabelecimento: string, valor: number }[] = dadoBanco.entradas;
 
-            let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
-            let valoresParaEscrever: any[][] = entradas.map((entrada) => [entrada.estabelecimento, entrada.valor]);
+                let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
 
-            await this.writeSheetData(range, valoresParaEscrever);
+                const estabelecimentos: string[] = [];
+                const valores: number[] = [];
+
+                entradas.forEach(entrada => {
+                    estabelecimentos.push(entrada.estabelecimento);
+                    valores.push(entrada.valor);
+                });
+
+                const valoresParaEscrever: any[][] = [estabelecimentos, valores];
+
+                await this.writeSheetData(range, valoresParaEscrever);
+            }
         }
     }
-}
 
 
 
