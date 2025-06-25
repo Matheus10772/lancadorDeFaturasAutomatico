@@ -90,17 +90,24 @@ class GoogleSheetsComunicationService {
             });
 
             /**Se o intervalo selecionado estiver vazio, 'values' será 'undefined'. CORRIGIR ISSO */
-            const rows = response.data.values;
+            const datas = response.data.values;
 
             let rowsInJSON: { coluna: string, value: number }[] = [];
 
-            if(rows && rows.length > 0) {
-                for (let row of rows) {
+            if(datas && datas.length > 0) {
+
+
+                const colIndex: number = 0;
+                const valueIndex: number = 1;
+                const matrixLength: number = datas[0].length;
+
+                for(let index = 0; index < matrixLength; index++) {
                     rowsInJSON.push({
-                        coluna: row[0],
-                        value: Number(row[1])
+                        coluna: datas[colIndex][index],
+                        value: Number(datas[valueIndex][index].replace('R$ ', '').replace(',', '.'))
                     });
                 }
+
             }
 
             return rowsInJSON;
@@ -129,7 +136,7 @@ class GoogleSheetsComunicationService {
         }
 
         for (let pessoa of pessoas) {
-            let dadosPorPessoa: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = [];
+            let dadosPorPessoa: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] } [] = [];
 
             for (let banco of listaDeBancos) {
                 let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);

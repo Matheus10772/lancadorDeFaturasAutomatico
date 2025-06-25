@@ -118,9 +118,18 @@ function atribuirDadoParaPessoa(row: CSVRow, pessoa: string): { message: string,
 	let message: string = '';
 	let nextRow: CSVRow | null | undefined = null;
 	try {
+
+
 		const valor: number = row.Valor;
 		const nomeEstabelecimento: string = row.Estabelecimento;
-		dadosJhonatan.push({ estabelecimento: nomeEstabelecimento, valor: valor });
+
+		if(pessoa.toLocaleLowerCase() === 'jhonatan') 
+			dadosJhonatan.push({ estabelecimento: nomeEstabelecimento, valor: valor });
+		else if(pessoa.toLocaleLowerCase() === 'matheus') 
+			dadosMatheus.push({ estabelecimento: nomeEstabelecimento, valor: valor });
+		else 
+			throw new Error('Pessoa inválida. Deve ser "Jhonatan" ou "Matheus".');
+		
 		message = `Entrada adicionada a ${pessoa}: ${nomeEstabelecimento} - R$ ${valor.toFixed(2)}`;
 		nextRow = globalDataCSV.pop(); // Pega a próxima entrada ou null se não houver mais
 
@@ -144,15 +153,26 @@ function dividirDado(row: CSVRow, pessoa: string[]): { message: string, nextRow:
 		const valoresDivididos: number = row.Valor / pessoa.length;
 		const nomeEstabelecimento: string = row.Estabelecimento;
 
-		pessoa.forEach((pessoaNome) => {
+		for(let pessoaNome of pessoa) {
 			if (pessoaNome.toLocaleLowerCase() === 'jhonatan') {
 				dadosJhonatan.push({ estabelecimento: nomeEstabelecimento + '(1/2)', valor: valoresDivididos });
 			} else if (pessoaNome.toLocaleLowerCase() === 'matheus') {
 				dadosMatheus.push({ estabelecimento: nomeEstabelecimento + '(1/2)', valor: valoresDivididos });
 			}
-			message = `Entrada adicionada a ${pessoaNome}: ${nomeEstabelecimento} - R$ ${valoresDivididos.toFixed(2)}`;
-		});
+			message += `Entrada adicionada a ${pessoaNome}: ${nomeEstabelecimento} - R$ ${valoresDivididos.toFixed(2)}\n`;
+		}
+
+		// pessoa.forEach((pessoaNome) => {
+		// 	if (pessoaNome.toLocaleLowerCase() === 'jhonatan') {
+		// 		dadosJhonatan.push({ estabelecimento: nomeEstabelecimento + '(1/2)', valor: valoresDivididos });
+		// 	} else if (pessoaNome.toLocaleLowerCase() === 'matheus') {
+		// 		dadosMatheus.push({ estabelecimento: nomeEstabelecimento + '(1/2)', valor: valoresDivididos });
+		// 	}
+		// 	message += `Entrada adicionada a ${pessoaNome}: ${nomeEstabelecimento} - R$ ${valoresDivididos.toFixed(2)}\n`;
+		// });
 		nextRow = globalDataCSV.pop(); // Pega a próxima entrada ou null se não houver mais
+		
+		return { message, nextRow };
 
 	}
 
@@ -163,7 +183,7 @@ function dividirDado(row: CSVRow, pessoa: string[]): { message: string, nextRow:
 		throw new Error(`Erro ao processar a entrada. Por favor, tente novamente.`);
 	}
 
-	return { message, nextRow };
+	//return { message, nextRow };
 }
 
 function removeElementFromArray<T>(array: T[], element: T) {
@@ -176,8 +196,8 @@ function removeElementFromArray<T>(array: T[], element: T) {
 async function formatarEnviarParaGoogleSheets() {
 	if (dadosJhonatan.length > 0 || dadosMatheus.length > 0) {
 		try {
-			const entradasJhonatan = dadosJhonatan.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
-			const entradasMatheus = dadosMatheus.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
+			//const entradasJhonatan = dadosJhonatan.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
+			//const entradasMatheus = dadosMatheus.map(dado => ({ estabelecimento: dado.estabelecimento, valor: dado.valor }));
 
 			const dadosFormatados: sheetData[] = [{
 				pessoa: 'jhonatan',
@@ -186,7 +206,7 @@ async function formatarEnviarParaGoogleSheets() {
 						banco: banco.toString(),
 						mes: mes,
 						ano: ano,
-						entradas: entradasJhonatan
+						entradas: dadosJhonatan
 					}
 				]
 			},
@@ -197,7 +217,7 @@ async function formatarEnviarParaGoogleSheets() {
 						banco: banco.toString(),
 						mes: mes,
 						ano: ano,
-						entradas: entradasMatheus
+						entradas: dadosMatheus
 					}
 				]
 			}];
@@ -361,11 +381,13 @@ async function startBot() {
 						throw new Error('Banco, mês ou ano dos dados buscados não correspondem aos definidos pelo usuário.');
 
 					// Verifica se algum estabelecimento em dados.entradas existe em algum objeto de dataCSV
-					let elementoParaRemover: CSVRow = {} as CSVRow;
+					let elementoParaRemoverPlanilha: CSVRow = {} as CSVRow;
+					let elementoParaRemoverGoogleSheets: {estabelecimento: string, valor: number} = {} as {estabelecimento: string, valor: number};
 					const existeEstabelecimento: boolean = dados.entradas.some(entrada =>
 						dataCSV.some(row => {
-							if (row.Estabelecimento === entrada.estabelecimento) {
-								elementoParaRemover = row;
+							if (row.Estabelecimento === entrada.estabelecimento || row.Estabelecimento + '(1/2)' === entrada.estabelecimento) {
+								elementoParaRemoverPlanilha = row;
+								elementoParaRemoverGoogleSheets = entrada;
 								return true;
 							} else {
 								return false;
@@ -375,7 +397,8 @@ async function startBot() {
 					);
 
 					if (existeEstabelecimento) {
-						removeElementFromArray(dataCSV, elementoParaRemover);
+						removeElementFromArray(dataCSV, elementoParaRemoverPlanilha);
+						removeElementFromArray(dados.entradas, elementoParaRemoverGoogleSheets);
 					}
 				}
 
