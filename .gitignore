@@ -5,7 +5,11 @@
 #custom
 
 resources/
-dist/index.js
+#dist/index.js
+extrator-itau/
+extrator-picpay/
+transformador.js
+
 
 ### Node ###
 # Logs
