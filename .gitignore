@@ -8,6 +8,7 @@ resources/
 #dist/index.js
 extrator-itau/
 extrator-picpay/
+extrator-nubank/
 transformador.js
 
 
