@@ -7,10 +7,11 @@ import Stream from 'stream';
 import { file } from 'googleapis/build/src/apis/file';
 import dotenv from 'dotenv';
 import { spawn } from 'child_process';
+import { normalizeName } from '../utils/padronizacaoDeNomes'
 
 dotenv.config();
 
-const dataDir: string = path.join(os.homedir(), process.env.INIT_DIR! );
+const dataDir: string = path.join(os.homedir(), process.env.INIT_DIR!);
 
 enum Banco {
     NUBANK = 'NUBANK',
@@ -25,9 +26,9 @@ enum Enconding {
 }
 
 interface CSVRow {
-  Data: string;
-  Estabelecimento: string;
-  Valor: number;
+    Data: string;
+    Estabelecimento: string;
+    Valor: number;
 }
 
 class CSVParser {
@@ -48,46 +49,46 @@ class CSVParser {
 
 
     private async getFileStream(filePath: string): Promise<fs.ReadStream> {
-        try {
-            return fs.createReadStream(filePath);
-        } catch (error) {
-            throw new Error(`Error reading file: ${error}`);
-        }
+        return new Promise((resolve, reject) => {
+            const stream = fs.createReadStream(filePath);
+            stream.on('error', reject);
+            stream.on('open', () => resolve(stream));
+        });
     }
 
     public async parseCSVtoJSON(banco: Banco, mes: string, ano: string): Promise<CSVRow[]> {
-        const filePath = path.join(this.basePath, banco.toString(), `${mes.toLowerCase()}${ano}/faturaConvertida/fatura.csv`);
+        const filePath = path.join(this.basePath, banco.toString(), `${normalizeName(mes.toLowerCase())}${ano}/faturaConvertida/fatura.csv`);
         const fileStream = await this.getFileStream(filePath);
 
-        
+
         const results: CSVRow[] = [];
         await new Promise<void>((resolve, reject) => {
             fileStream
-            .pipe(csv({ separator: ';', skipLines: this.csvSkipLines }))
-            .on('data', (data) => {
-                results.push({
-                    Data: data.Data,
-                    Estabelecimento: data.Estabelecimento,
-                    Valor: parseFloat((data['Valor (R$)']).replace(',', '.')) 
-                }) 
-            })
-            .on('end', () => resolve())
-            .on('error', (error) => reject(new Error(`Error parsing CSV: ${error}`)));
+                .pipe(csv({ separator: ';', skipLines: this.csvSkipLines }))
+                .on('data', (data) => {
+                    results.push({
+                        Data: data.Data,
+                        Estabelecimento: data.Estabelecimento,
+                        Valor: parseFloat((data['Valor (R$)']).replace(',', '.'))
+                    })
+                })
+                .on('end', () => resolve())
+                .on('error', (error) => reject(new Error(`Error parsing CSV: ${error}`)));
         });
-        
+
         return results;
     }
 
-    public async writeCSVtoFile(banco: Banco, mes: string, ano: string,fileLink: string): Promise<string> {
+    public async writeCSVtoFile(banco: Banco, mes: string, ano: string, fileLink: string): Promise<string> {
         let result: string = '';
 
-        const filePath = path.join(this.basePath, banco.toString(), `${mes}/faturaConvertida/fatura.csv`);
+        const filePath = path.join(this.basePath, banco.toString(), `${normalizeName(mes.toLocaleLowerCase())}/faturaConvertida/fatura.csv`);
         const fileStream = fs.createWriteStream(filePath, { encoding: 'utf8' });
 
         const fileURL = new URL(fileLink);
 
         https.get(fileURL, (response) => {
-            if(response.statusCode !== 200) {
+            if (response.statusCode !== 200) {
                 result = `❌ Erro ao baixar o arquivo: código ${response.statusCode}`;
                 return result;
             }
@@ -98,7 +99,7 @@ class CSVParser {
                 fileStream.close();
                 result = `✅ Arquivo baixado com sucesso: ${filePath}`;
                 return result;
-                
+
             });
 
 
@@ -112,13 +113,13 @@ class CSVParser {
     }
 
     public getExampleCSV(): string {
-    
-        if(!fs.existsSync(this.exampleCSVPath))
-            throw new Error('Arquivo de exemplo não encontrado');    
-        
+
+        if (!fs.existsSync(this.exampleCSVPath))
+            throw new Error('Arquivo de exemplo não encontrado');
+
         return this.exampleCSVPath;
-    
-            
+
+
     }
 
     public getSeprator(): string {
@@ -162,4 +163,4 @@ class CSVParser {
 
 }
 
-export { CSVParser ,Banco, Enconding, CSVRow };
+export { CSVParser, Banco, Enconding, CSVRow };

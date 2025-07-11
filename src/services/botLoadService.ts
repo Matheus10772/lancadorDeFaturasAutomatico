@@ -19,6 +19,7 @@ interface sequenceOfOptionsButtons {
 
 dotenv.config();
 const bot: Telegraf<MyContext> = new Telegraf(process.env.BOT_TOKEN!)
+let chatID: number = 0;
 const csvParser: CSVParser = new CSVParser();
 const googleSheetsService: GoogleSheetsComunicationService = new GoogleSheetsComunicationService();
 
@@ -245,6 +246,10 @@ function sendOptionsForEntry(ctx: any) {
 	ctx.reply(`Selecione o que fazer com a próxima entrada\nEstabelecimento: ${currentCSVRow!.Estabelecimento} Preço: R$${currentCSVRow!.Valor} Data: ${currentCSVRow?.Data}`, Markup.inlineKeyboard(makeSequencButtons(sequence, 1)));
 }
 
+export async function sendAutonomosMessage(message: string) {
+	await bot.telegram.sendMessage(chatID, `❌ Ocorreu um erro desconhecido: ${message}`);
+}
+
 async function startBot() {
 	bot.use(session());
 
@@ -256,6 +261,7 @@ async function startBot() {
 
 	bot.command('start', async (ctx) => {
 		console.log('Opções iniciais.');
+		chatID = ctx.chat.id;
 		await ctx.reply('Escolha uma opção:', Markup.inlineKeyboard([
 			[Markup.button.callback('Escolher Mês', 'escolhaMes')],
 			[Markup.button.callback('Escolher Ano', 'escolhaAno')],
