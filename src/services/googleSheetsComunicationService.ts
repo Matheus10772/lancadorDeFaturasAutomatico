@@ -12,17 +12,14 @@ import { Banco } from './loadAndParseCSVService';
 dotenv.config();
 
 
-interface sheetData { 
-    pessoa: string, 
-    dados: { 
-        banco: string, 
-        mes: string, 
-        ano: string, 
-        entradas: { 
-            estabelecimento: string, 
-            valor: number 
-        }[] 
-    }[] 
+interface sheetData {
+    banco: string,
+    mes: string,
+    ano: string,
+    entradas: {
+        estabelecimento: string,
+        valor: number
+    }[]
 }
 
 interface rawSheetData { 
@@ -121,13 +118,9 @@ class GoogleSheetsComunicationService {
     }
 
     /**Método que faz uma interface para facilitar o uso da API do google */
-    public async obterInformacoesPlanilha(mes: string, ano: string, banco?: Banco[], pessoas?: string[]): Promise<sheetData[]> {
+    public async obterInformacoesPlanilha(mes: string, ano: string, banco?: Banco[]): Promise<sheetData[]> {
         let dadosPlanilhaFormatadosJSON: sheetData[] = [];
         let listaDeBancos: string[];
-
-        if (!pessoas || pessoas.length === 0) {
-            pessoas = ['matheus', 'jhonatan'];
-        }
 
         if(!banco) {
             listaDeBancos = this.listaDeBancos;
@@ -135,11 +128,9 @@ class GoogleSheetsComunicationService {
             listaDeBancos = banco.map((banco) => {return banco.toString()});
         }
 
-        for (let pessoa of pessoas) {
-            let dadosPorPessoa: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] } [] = [];
 
             for (let banco of listaDeBancos) {
-                let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
+                let range: string = this.getRangeForSheet(mes, ano, banco);
                 let dadosBrutos = await this.readSheetData(range);
                 let dadosBrutosFormatados: { estabelecimento: string, valor: number }[] = dadosBrutos.map((dado) => { return { estabelecimento: dado.coluna, valor: dado.value } });
 
@@ -156,47 +147,55 @@ class GoogleSheetsComunicationService {
                 pessoa: pessoa,
                 dados: dadosPorPessoa
             });
-        }
+        
 
         return dadosPlanilhaFormatadosJSON;
     }
 
 
     /**Método para obter o parâmetro range já formatado no padrão necessário para a API do google**/
-    private getRangeForSheet(mes: string, ano: string, pessoa: string, banco: string): string {
-        let pessoaOffset: number = 0;
-        if (pessoa.toLocaleLowerCase() === 'jhonatan') {
-            pessoaOffset = 1;
-        } else if (pessoa.toLocaleLowerCase() === 'matheus') {
-            pessoaOffset = 23;
-        }
+    private getRangeForSheet(mes: string, ano: string, banco: string): string {
 
-        let planilhaAlvo: string = `${mes}(${ano})`;
+        let planilhaAlvo: string = `Var_(${banco.toLocaleLowerCase()})`;
 
-        let bancoOffset: number = 0;
+        let offset: number = 5;
 
-        switch (banco.toLocaleLowerCase()) {
-            case 'itau':
-                bancoOffset = 2;
-                break;
-            case 'nubank':
-                bancoOffset = 6;
-                break;
-            case 'bancodobrasil':
-                bancoOffset = 10;
-                break;
-            case 'picpay':
-                bancoOffset = 14;
-                break;
-            case 'nossopay':
-                bancoOffset = 18;
-                break;
-            default:
-                break;
+        const lineOffset: number = 100;
+
+        const colunaCorrespondente: string[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P'];
+
+        const defaultOffSetForColum: number = 1;
+
+        let additionalOffset: number = 0;
+        if(Number(ano) === 2027) {
+            additionalOffset = 3;
+
+            const mapOffsetForMes: Map<string, number>  = new Map<string, number>([
+                ['janeiro', 0],
+                ['fevereiro', 1],
+                ['março', 2],
+                ['abril', 3],
+                ['maio', 4],
+                ['junho', 5],
+                ['julho', 6],
+                ['agosto', 7],
+                ['setembro', 8],
+                ['outubro', 9],
+                ['novembro', 10],
+                ['dezembro', 11]
+            ]);
+
+            additionalOffset += mapOffsetForMes.get(mes.toLowerCase()) ?? 0;
+        } else if(Number(ano) === 2026) {
+            const mapOffsetForMes: Map<string, number>  = new Map<string, number>([
+                ['outubro', 0],
+                ['novembro', 1],
+                ['dezembro', 2]
+            ]);
         }
 
         // Exemplo de como construir o range baseado em variáveis
-        return `${planilhaAlvo}!B${pessoaOffset + bancoOffset}:BI${pessoaOffset + bancoOffset + 1}`; // Ex: 'Sheet1!A1:D10'
+        return `${planilhaAlvo}!${colunaCorrespondente[(defaultOffSetForColum + additionalOffset)]}${offset}:${colunaCorrespondente[(defaultOffSetForColum + additionalOffset)]}${lineOffset}`; // Ex: 'Sheet1!A1:D10'
     }
 
     /**
