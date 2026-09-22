@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { Markup, Telegraf, session } from 'telegraf';
 import { Context as TelegrafContext } from 'telegraf';
 import { DateTime } from 'luxon';
+import { sheetData, GoogleSheetsComunicationService } from './googleSheetsComunicationService';
 
 // --- Interfaces ---
 
@@ -25,6 +26,7 @@ interface DadosNotificacao {
 
 dotenv.config();
 const bot: Telegraf<MyContext> = new Telegraf(process.env.BOT_TOKEN!);
+const googleSheetsService: GoogleSheetsComunicationService = new GoogleSheetsComunicationService();
 
 // --- Funções de extração ---
 
@@ -134,13 +136,45 @@ function enviarMenuBancos(ctx: any, dados: DadosNotificacao) {
 	ctx.reply('🏦 Selecione o banco para inserir:', Markup.inlineKeyboard(botoes));
 }
 
-function inserirNaPlanilha(dados: DadosNotificacao, banco: string) {
+// --- Mapeamento de número do mês para nome ---
+
+const MESES_NOMES: string[] = [
+	'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+	'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+];
+
+function converterParaSheetData(dados: DadosNotificacao, banco: string): sheetData {
+	// Extrai mês e ano da data (formato "dd/MM/yyyy" ou "dd/MM")
+	const partesData = dados.data.split('/');
+	const mesNumero = parseInt(partesData[1], 10); // 1-12
+	const ano = partesData[2] ?? DateTime.now().toFormat('yyyy');
+
+	const mes = MESES_NOMES[mesNumero - 1];
+
+	// Converte o valor de "R$ 12,34" para número
+	const valorNumerico = Number(
+		dados.valor.replace('R$', '').replace(/\s/g, '').replace('.', '').replace(',', '.')
+	);
+
+	return {
+		banco,
+		mes,
+		ano: ano.toString(),
+		entradas: [{ estabelecimento: dados.estabelecimento, valor: valorNumerico }],
+	};
+}
+
+async function inserirNaPlanilha(dados: DadosNotificacao, banco: string): Promise<void> {
+	const sheetDataConvertido: sheetData = converterParaSheetData(dados, banco);
+
 	console.log('===== INSERINDO NA PLANILHA =====');
 	console.log(`Banco: ${banco}`);
+	console.log(`Mês: ${sheetDataConvertido.mes} | Ano: ${sheetDataConvertido.ano}`);
 	console.log(`Estabelecimento: ${dados.estabelecimento}`);
-	console.log(`Valor: ${dados.valor}`);
-	console.log(`Data: ${dados.data}`);
+	console.log(`Valor: ${sheetDataConvertido.entradas[0].valor}`);
 	console.log('=================================');
+
+	await googleSheetsService.inserirInformacoesPlanilha(sheetDataConvertido);
 }
 
 // --- Bot ---
@@ -275,15 +309,20 @@ async function startBot() {
 
 		const nomeBanco = banco.charAt(0).toUpperCase() + banco.slice(1);
 
-		inserirNaPlanilha(session.dadosExtraidos, nomeBanco);
+		try {
+			await inserirNaPlanilha(session.dadosExtraidos, nomeBanco);
 
-		await ctx.reply(
-			`✅ Inserido com sucesso no *${nomeBanco}*!\n\n` +
-			`🏪 ${session.dadosExtraidos.estabelecimento}\n` +
-			`💰 ${session.dadosExtraidos.valor}\n` +
-			`📅 ${session.dadosExtraidos.data}`,
-			{ parse_mode: 'Markdown' }
-		);
+			await ctx.reply(
+				`✅ Inserido com sucesso no *${nomeBanco}*!\n\n` +
+				`🏪 ${session.dadosExtraidos.estabelecimento}\n` +
+				`💰 ${session.dadosExtraidos.valor}\n` +
+				`📅 ${session.dadosExtraidos.data}`,
+				{ parse_mode: 'Markdown' }
+			);
+		} catch (error) {
+			console.error('Erro ao inserir na planilha:', error);
+			await ctx.reply(`❌ Erro ao inserir na planilha: ${error}`);
+		}
 
 		// Limpa os dados após inserir
 		session.dadosExtraidos = null;

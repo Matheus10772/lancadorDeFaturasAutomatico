@@ -3,258 +3,216 @@ import { GoogleAuth } from 'google-auth-library';
 import { JSONClient } from 'google-auth-library/build/src/auth/googleauth';
 import * as path from 'path';
 import os from 'os';
-
-// Se você usar variáveis de ambiente para o caminho da chave,
-// pode precisar de uma lib como 'dotenv' se não estiver em um ambiente que já as carrega (ex: alguns serviços cloud)
 import * as dotenv from 'dotenv';
-import { get } from 'http';
-import { Banco } from './loadAndParseCSVService';
 dotenv.config();
 
 
+// --- Interfaces ---
+
 interface sheetData {
-    banco: string,
-    mes: string,
-    ano: string,
-    entradas: {
-        estabelecimento: string,
-        valor: number
-    }[]
+	banco: string;
+	mes: string;
+	ano: string;
+	entradas: { estabelecimento: string; valor: number }[];
 }
 
-interface rawSheetData { 
-    coluna: string, 
-    value: number 
-}
+// --- Mapeamento de meses para colunas ---
 
+// Cada mês ocupa 2 colunas: Estabelecimento + Valor.
+// outubro/2026 = colunas A-B, novembro/2026 = colunas C-D, etc.
+// Linha 4 = cabeçalhos mês/ano, linha 5 = sub-headers, dados começam na linha 6.
+const MESES_ORDEM: string[] = [
+	'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+	'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+];
 
+const LETRAS_COLUNA: string[] = [
+	'A','B','C','D','E','F','G','H','I','J','K','L',
+	'M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'
+];
+
+const ANO_BASE = 2026;
+const MES_BASE_INDEX = 9; // outubro = índice 9 em MESES_ORDEM (0-based)
+const COLUNAS_POR_MES = 2; // Estabelecimento + Valor
+const COLUNA_BASE_INDEX = 0; // outubro/2026 começa na coluna A (índice 0)
+
+const LINHA_DADOS_INICIO = 6; // dados começam na linha 6
 
 
 class GoogleSheetsComunicationService {
-    //private sheetsClient: Promise<sheets_v4.Sheets>;
-    private spreadsheetId: string;// Substitua pelo ID da sua planilha
-    private listaDeBancos: string[];
+	private spreadsheetId: string;
+	private KEYFILEPATH: string;
+	private SCOPES: string[];
 
-    // --- Configuração ---
+	constructor() {
+		this.spreadsheetId = '1aGgr3I_xcFEKQGiwyTnxD97hEPWVWFlyoB8g29aFcVU';
+		this.KEYFILEPATH = path.join(os.homedir(), process.env.INIT_DIR!, process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
+		this.SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
+	}
 
-    // O caminho para o arquivo JSON da sua Conta de Serviço baixado do Google Cloud Console.
-    // É RECOMENDADO carregar este caminho de uma variável de ambiente em produção por segurança.
-    // Ex: process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE
-    private KEYFILEPATH: string;
+	// --- Autenticação ---
 
-    // Escopos necessários. Para ler e modificar, você precisa do escopo 'spreadsheets'.
-    // Se for apenas leitura, 'spreadsheets.readonly' é mais restritivo e recomendado.
-    private SCOPES: string[];
+	private async authenticateServiceAccount(): Promise<sheets_v4.Sheets> {
+		const auth: GoogleAuth<JSONClient> = new google.auth.GoogleAuth({
+			keyFile: this.KEYFILEPATH,
+			scopes: this.SCOPES,
+		});
+		const client = await auth.getClient();
+		return google.sheets({ version: 'v4', auth: client as any });
+	}
 
-    constructor() {
-        //this.sheetsClient = this.authenticateServiceAccount();
-        // Aguarda a autenticação ser concluída antes de prosseguir
-        // (caso precise garantir em algum método, use: await this.sheetsClient)
-        this.spreadsheetId = '1aGgr3I_xcFEKQGiwyTnxD97hEPWVWFlyoB8g29aFcVU'; // Substitua pelo ID da sua planilha
-        this.listaDeBancos = ['itau', 'nubank', 'bancodobrasil', 'picpay', 'nossopay'];
-        this.KEYFILEPATH = path.join(os.homedir(), process.env.INIT_DIR!, process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
-        this.SCOPES = ['https://www.googleapis.com/auth/spreadsheets']; // Permite ler e modificar
+	// --- Helpers ---
 
-    }
+	/** Retorna o nome da aba com base no banco. Ex: "nubank" → "Var_nubank" */
+	private getNomeAba(banco: string): string {
+		return `Var_${banco.toLowerCase()}`;
+	}
 
-    /**
- * Obtém uma instância autenticada da Google Sheets API usando uma Conta de Serviço.
- * Esta instância pode ser usada para fazer requisições subsequentes.
- */
+	/** Retorna as letras das 2 colunas (Estabelecimento + Valor) para o mês/ano */
+	private getColunasMes(mes: string, ano: string): { colunaEstabelecimento: string; colunaValor: string } {
+		const mesIndex = MESES_ORDEM.indexOf(mes.toLowerCase());
+		if (mesIndex === -1) throw new Error(`Mês inválido: ${mes}`);
 
-    private async authenticateServiceAccount(): Promise<sheets_v4.Sheets> {
-        // Autentica usando o arquivo JSON da Conta de Serviço e os escopos definidos
-        const auth: GoogleAuth<JSONClient> = new google.auth.GoogleAuth({
-            keyFile: this.KEYFILEPATH,
-            scopes: this.SCOPES,
-        });
+		// Calcula quantos meses de distância do ponto base (outubro/2026)
+		const anoNum = Number(ano);
+		const mesesDesdeBase = (anoNum - ANO_BASE) * 12 + (mesIndex - MES_BASE_INDEX);
 
-        // Obtém o cliente autenticado
-        const client = await auth.getClient();
+		if (mesesDesdeBase < 0) throw new Error(`Data ${mes}/${ano} é anterior ao início da planilha (outubro/2026)`);
 
-        // Retorna a instância do serviço Sheets autenticada
-        return google.sheets({ version: 'v4', auth: client as any }); // 'auth: client as any' lida com a tipagem
-    }
+		const colunaEstabIndex = COLUNA_BASE_INDEX + (mesesDesdeBase * COLUNAS_POR_MES);
+		const colunaValorIndex = colunaEstabIndex + 1;
 
-    /**
-    * Método para ler dados de uma planilha do Google Sheets.
-    */
-    private async readSheetData(range: string): Promise<rawSheetData[]> {
-        try {
-            const response = await (await this.authenticateServiceAccount()).spreadsheets.values.get({
-                spreadsheetId: this.spreadsheetId, // O ID da sua planilha
-                range: range,               // O intervalo que você quer ler (ex: 'Sheet1!A1:D10')
-            });
+		if (colunaValorIndex >= LETRAS_COLUNA.length) throw new Error(`Data ${mes}/${ano} excede as colunas disponíveis`);
 
-            /**Se o intervalo selecionado estiver vazio, 'values' será 'undefined'. CORRIGIR ISSO */
-            const datas = response.data.values;
+		return {
+			colunaEstabelecimento: LETRAS_COLUNA[colunaEstabIndex],
+			colunaValor: LETRAS_COLUNA[colunaValorIndex],
+		};
+	}
 
-            let rowsInJSON: { coluna: string, value: number }[] = [];
+	// --- Leitura ---
 
-            if(datas && datas.length > 0) {
+	/**
+	 * Lê os dados de um mês/ano/banco da planilha.
+	 * Cada mês tem 2 colunas lado a lado: Estabelecimento + Valor.
+	 */
+	public async obterInformacoesPlanilha(mes: string, ano: string, banco: string): Promise<sheetData> {
+		try {
+			const aba = this.getNomeAba(banco);
+			const { colunaEstabelecimento, colunaValor } = this.getColunasMes(mes, ano);
+			const linhaFim = 100;
 
+			// Lê as 2 colunas do mês de uma vez (ex: A6:B100)
+			const range = `${aba}!${colunaEstabelecimento}${LINHA_DADOS_INICIO}:${colunaValor}${linhaFim}`;
 
-                const colIndex: number = 0;
-                const valueIndex: number = 1;
-                const matrixLength: number = datas[0].length;
+			const sheets = await this.authenticateServiceAccount();
+			const response = await sheets.spreadsheets.values.get({
+				spreadsheetId: this.spreadsheetId,
+				range: range,
+			});
 
-                for(let index = 0; index < matrixLength; index++) {
-                    rowsInJSON.push({
-                        coluna: datas[colIndex][index],
-                        value: Number(datas[valueIndex][index].replace('R$ ', '').replace(',', '.'))
-                    });
-                }
+			const linhas = response.data.values ?? [];
+			const entradas: { estabelecimento: string; valor: number }[] = [];
 
-            }
+			for (const linha of linhas) {
+				const nome = linha?.[0];
+				if (!nome || String(nome).trim() === '') continue;
 
-            return rowsInJSON;
-        }
+				const valorStr = linha?.[1] ?? '0';
+				const valor = Number(
+					String(valorStr).replace('R$ ', '').replace('.', '').replace(',', '.')
+				);
 
-        catch (error) {
-            console.error(`Erro ao ler dados do intervalo '${range}':`, error);
-            throw error;
-        }
+				entradas.push({ estabelecimento: nome, valor: isNaN(valor) ? 0 : valor });
+			}
 
-    }
+			return { banco, mes, ano, entradas };
 
-    /**Método que faz uma interface para facilitar o uso da API do google */
-    public async obterInformacoesPlanilha(mes: string, ano: string, banco?: Banco[]): Promise<sheetData[]> {
-        let dadosPlanilhaFormatadosJSON: sheetData[] = [];
-        let listaDeBancos: string[];
+		} catch (error) {
+			console.error(`Erro ao obter informações da planilha para ${banco} ${mes}/${ano}:`, error);
+			throw error;
+		}
+	}
 
-        if(!banco) {
-            listaDeBancos = this.listaDeBancos;
-        } else {
-            listaDeBancos = banco.map((banco) => {return banco.toString()});
-        }
+	// --- Escrita ---
 
+	/**
+	 * Insere os dados na planilha.
+	 * Escreve nas 2 colunas do mês (Estabelecimento + Valor),
+	 * a partir da primeira linha vazia após os dados existentes.
+	 */
+	public async inserirInformacoesPlanilha(dados: sheetData): Promise<void> {
+		try {
+			const aba = this.getNomeAba(dados.banco);
+			const { colunaEstabelecimento, colunaValor } = this.getColunasMes(dados.mes, dados.ano);
 
-            for (let banco of listaDeBancos) {
-                let range: string = this.getRangeForSheet(mes, ano, banco);
-                let dadosBrutos = await this.readSheetData(range);
-                let dadosBrutosFormatados: { estabelecimento: string, valor: number }[] = dadosBrutos.map((dado) => { return { estabelecimento: dado.coluna, valor: dado.value } });
+			// Descobre a próxima linha vazia nas colunas desse mês
+			const linhaInicio = await this.encontrarProximaLinhaVazia(aba, colunaEstabelecimento);
 
-                dadosPorPessoa.push({
-                    banco: banco,
-                    mes: mes,
-                    ano: ano,
-                    entradas: dadosBrutosFormatados
-                });
+			const sheets = await this.authenticateServiceAccount();
 
-            }
+			// Cada entrada vira uma linha com 2 colunas: [estabelecimento, valor]
+			const valores: any[][] = dados.entradas.map(dado => [dado.estabelecimento, dado.valor]);
 
-            dadosPlanilhaFormatadosJSON.push({
-                pessoa: pessoa,
-                dados: dadosPorPessoa
-            });
-        
+			const range = `${aba}!${colunaEstabelecimento}${linhaInicio}:${colunaValor}${linhaInicio + dados.entradas.length - 1}`;
 
-        return dadosPlanilhaFormatadosJSON;
-    }
+			await sheets.spreadsheets.values.update({
+				spreadsheetId: this.spreadsheetId,
+				range: range,
+				valueInputOption: 'USER_ENTERED',
+				requestBody: { values: valores },
+			});
 
+			console.log(`Inseridas ${dados.entradas.length} entradas em ${aba}, colunas ${colunaEstabelecimento}-${colunaValor}, a partir da linha ${linhaInicio}`);
 
-    /**Método para obter o parâmetro range já formatado no padrão necessário para a API do google**/
-    private getRangeForSheet(mes: string, ano: string, banco: string): string {
+		} catch (error) {
+			console.error(`Erro ao inserir dados na planilha:`, error);
+			throw error;
+		}
+	}
 
-        let planilhaAlvo: string = `Var_(${banco.toLocaleLowerCase()})`;
+	/**
+	 * Insere uma única entrada na planilha.
+	 * Método simplificado para uso com o bot de notificações.
+	 */
+	public async inserirEntradaUnica(banco: string, mes: string, ano: string, estabelecimento: string, valor: number): Promise<void> {
+		const dados: sheetData = {
+			banco,
+			mes,
+			ano,
+			entradas: [{ estabelecimento, valor }],
+		};
+		await this.inserirInformacoesPlanilha(dados);
+	}
 
-        let offset: number = 5;
+	/** Encontra a próxima linha vazia na coluna especificada da aba */
+	private async encontrarProximaLinhaVazia(aba: string, coluna: string): Promise<number> {
+		try {
+			const sheets = await this.authenticateServiceAccount();
+			const range = `${aba}!${coluna}${LINHA_DADOS_INICIO}:${coluna}100`;
 
-        const lineOffset: number = 100;
+			const response = await sheets.spreadsheets.values.get({
+				spreadsheetId: this.spreadsheetId,
+				range: range,
+			});
 
-        const colunaCorrespondente: string[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P'];
+			const valores = response.data.values ?? [];
 
-        const defaultOffSetForColum: number = 1;
+			// Conta quantas linhas têm conteúdo
+			let ultimaLinhaComDado = 0;
+			for (let i = 0; i < valores.length; i++) {
+				if (valores[i]?.[0] && String(valores[i][0]).trim() !== '') {
+					ultimaLinhaComDado = i + 1;
+				}
+			}
 
-        let additionalOffset: number = 0;
-        if(Number(ano) === 2027) {
-            additionalOffset = 3;
+			return LINHA_DADOS_INICIO + ultimaLinhaComDado;
 
-            const mapOffsetForMes: Map<string, number>  = new Map<string, number>([
-                ['janeiro', 0],
-                ['fevereiro', 1],
-                ['março', 2],
-                ['abril', 3],
-                ['maio', 4],
-                ['junho', 5],
-                ['julho', 6],
-                ['agosto', 7],
-                ['setembro', 8],
-                ['outubro', 9],
-                ['novembro', 10],
-                ['dezembro', 11]
-            ]);
-
-            additionalOffset += mapOffsetForMes.get(mes.toLowerCase()) ?? 0;
-        } else if(Number(ano) === 2026) {
-            const mapOffsetForMes: Map<string, number>  = new Map<string, number>([
-                ['outubro', 0],
-                ['novembro', 1],
-                ['dezembro', 2]
-            ]);
-        }
-
-        // Exemplo de como construir o range baseado em variáveis
-        return `${planilhaAlvo}!${colunaCorrespondente[(defaultOffSetForColum + additionalOffset)]}${offset}:${colunaCorrespondente[(defaultOffSetForColum + additionalOffset)]}${lineOffset}`; // Ex: 'Sheet1!A1:D10'
-    }
-
-    /**
- * Método para escrever dados em uma planilha do Google Sheets.
- */
-private async writeSheetData(range: string, values: any[][]) {
-    try {
-
-        const response = await (await this.authenticateServiceAccount()).spreadsheets.values.update({
-            spreadsheetId: this.spreadsheetId, // O ID da sua planilha
-            range: range,               // O intervalo onde escrever (ex: 'Sheet1!A1')
-            valueInputOption: 'RAW',    // Como os dados são interpretados (RAW ou USER_ENTERED)
-            requestBody: {
-                values: values,
-            },
-        });
-
-        console.log(`Células atualizadas: ${response.data.updatedCells}`);
-        console.log(`Linhas atualizadas: ${response.data.updatedRows}`);
-        // Outras informações úteis no response.data
-
-    } catch (error) {
-        console.error(`Erro ao escrever dados no intervalo '${range}':`, error);
-        throw error;
-    }
-}
-
-/**Método que faz uma interface que facilita o uso da API do google que faz a escrita na planilha do google.*/
-    public async inserirInformacoesPlanilha(dadosPlanilhaFormatadosJSON: sheetData[]) {
-        for (let dado of dadosPlanilhaFormatadosJSON) {
-            let pessoa: string = dado.pessoa;
-            let dados: { banco: string, mes: string, ano: string, entradas: { estabelecimento: string, valor: number }[] }[] = dado.dados;
-
-            for (let dadoBanco of dados) {
-                let banco: string = dadoBanco.banco;
-                let mes: string = dadoBanco.mes;
-                let ano: string = dadoBanco.ano;
-                let entradas: { estabelecimento: string, valor: number }[] = dadoBanco.entradas;
-
-                let range: string = this.getRangeForSheet(mes, ano, pessoa, banco);
-
-                const estabelecimentos: string[] = [];
-                const valores: number[] = [];
-
-                entradas.forEach(entrada => {
-                    estabelecimentos.push(entrada.estabelecimento);
-                    valores.push(entrada.valor);
-                });
-
-                const valoresParaEscrever: any[][] = [estabelecimentos, valores];
-
-                await this.writeSheetData(range, valoresParaEscrever);
-            }
-        }
-    }
-
-
-
-
+		} catch (error) {
+			console.error(`Erro ao encontrar próxima linha vazia em ${aba}:`, error);
+			return LINHA_DADOS_INICIO; // Fallback: começa na primeira linha de dados
+		}
+	}
 }
 
 export { sheetData, GoogleSheetsComunicationService };
