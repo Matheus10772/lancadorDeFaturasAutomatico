@@ -1,4 +1,5 @@
 import { startBot } from './src/services/botLoadService';
+import { startServer } from './src/services/receiveText';
 
 async function startBotWithRetry() {
     while (true) {
@@ -12,4 +13,9 @@ async function startBotWithRetry() {
     }
 }
 
-startBotWithRetry();
+async function main() {
+    await startBotWithRetry();
+    await startServer();
+}
+
+main();

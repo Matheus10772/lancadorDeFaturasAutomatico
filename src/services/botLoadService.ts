@@ -1,8 +1,10 @@
 import dotenv from 'dotenv';
 import { Markup, Telegraf, session } from 'telegraf';
 import { Context as TelegrafContext } from 'telegraf';
+import { message } from 'telegraf/filters';
 import { DateTime } from 'luxon';
 import { sheetData, GoogleSheetsComunicationService } from './googleSheetsComunicationService';
+import { gerarToken } from './tokenService';
 
 // --- Interfaces ---
 
@@ -27,6 +29,11 @@ interface DadosNotificacao {
 dotenv.config();
 const bot: Telegraf<MyContext> = new Telegraf(process.env.BOT_TOKEN!);
 const googleSheetsService: GoogleSheetsComunicationService = new GoogleSheetsComunicationService();
+
+// --- Mapa de dados pendentes (vindos via HTTP) ---
+// Armazena dados processados de notificações recebidas via HTTP
+// que aguardam confirmação do usuário no Telegram.
+const pendingData: Map<number, DadosNotificacao> = new Map();
 
 // --- Funções de extração ---
 
@@ -177,6 +184,68 @@ async function inserirNaPlanilha(dados: DadosNotificacao, banco: string): Promis
 	await googleSheetsService.inserirInformacoesPlanilha(sheetDataConvertido);
 }
 
+// --- Processamento de notificação externa (via HTTP) ---
+
+/**
+ * Processa uma notificação recebida via HTTP (MacroDroid).
+ * Extrai os dados, armazena no mapa de pendentes, e envia o menu de confirmação
+ * ao chat do Telegram para o usuário aprovar.
+ *
+ * @returns Os dados extraídos ou null se não foi possível processar
+ */
+async function processarNotificacaoExterna(chatId: number, texto: string): Promise<DadosNotificacao | null> {
+	const dados = processarNotificacao(texto);
+
+	if (!dados) {
+		await bot.telegram.sendMessage(
+			chatId,
+			'⚠️ Notificação recebida via HTTP, mas não consegui extrair as informações.\n' +
+			'Certifique-se de que contém o valor (R$) e o nome do estabelecimento.'
+		);
+		return null;
+	}
+
+	// Armazena no mapa de dados pendentes
+	pendingData.set(chatId, dados);
+
+	// Envia menu de confirmação ao Telegram
+	const resumo = formatarResumo(dados);
+	await bot.telegram.sendMessage(
+		chatId,
+		`📡 *Notificação recebida via MacroDroid:*\n\n${resumo}`,
+		{
+			parse_mode: 'Markdown',
+			...Markup.inlineKeyboard([
+				[Markup.button.callback('✅ Adicionar', 'adicionar')],
+				[Markup.button.callback('✏️ Editar', 'editar')],
+				[Markup.button.callback('❌ Ignorar', 'ignorar')],
+			]),
+		}
+	);
+
+	return dados;
+}
+
+/**
+ * Obtém os dados extraídos para um chat, verificando tanto a session quanto o mapa de pendentes.
+ * Prioriza dados da session (interação direta com o bot).
+ */
+function obterDadosExtraidos(chatId: number, session: UserSessionData): DadosNotificacao | null {
+	return session.dadosExtraidos ?? pendingData.get(chatId) ?? null;
+}
+
+/**
+ * Armazena dados extraídos tanto na session quanto no mapa de pendentes.
+ */
+function armazenarDadosExtraidos(chatId: number, session: UserSessionData, dados: DadosNotificacao | null): void {
+	session.dadosExtraidos = dados;
+	if (dados) {
+		pendingData.set(chatId, dados);
+	} else {
+		pendingData.delete(chatId);
+	}
+}
+
 // --- Bot ---
 
 async function startBot() {
@@ -188,28 +257,53 @@ async function startBot() {
 	});
 
 	bot.command('start', async (ctx) => {
-		await ctx.reply('👋 Bot de notificações ativo!\n\nEnvie a notificação do banco (texto) e eu irei processar.');
+		await ctx.reply('👋 Bot de notificações ativo!\n\nEnvie a notificação do banco (texto) e eu irei processar.\n\nUse /token para gerar um token de API para o MacroDroid.');
 	});
 
-	// --- Recebe mensagem de texto (notificação do MacroDroid) ---
-	bot.on('text', async (ctx) => {
+	// --- Comando: Gerar token de API ---
+	bot.command('token', async (ctx) => {
+		try {
+			const novoToken = await gerarToken('Token gerado via Telegram');
+			await ctx.reply(
+				`🔑 *Token gerado com sucesso!*\n\n` +
+				`\`${novoToken}\`\n\n` +
+				`⚠️ Guarde este token em local seguro. Ele será usado para autenticação na API do MacroDroid.`,
+				{ parse_mode: 'Markdown' }
+			);
+		} catch (error) {
+			console.error('Erro ao gerar token:', error);
+			await ctx.reply('❌ Erro ao gerar token. Tente novamente.');
+		}
+	});
+
+	// --- Recebe mensagem de texto (notificação direta no Telegram) ---
+	bot.on(message('text'), async (ctx) => {
 		const session: UserSessionData = ctx.session as UserSessionData;
 		const texto: string = ctx.message.text;
+		const chatId: number = ctx.chat.id;
 
 		// Se está no meio de uma edição, trata a resposta
 		if (session.etapa === 'editando_estabelecimento') {
-			session.dadosExtraidos!.estabelecimento = texto;
+			const dados = obterDadosExtraidos(chatId, session);
+			if (dados) {
+				dados.estabelecimento = texto;
+				armazenarDadosExtraidos(chatId, session, dados);
+			}
 			session.etapa = '';
 			await ctx.reply(`✅ Estabelecimento alterado para: *${texto}*`, { parse_mode: 'Markdown' });
-			enviarMenuPrincipal(ctx, session.dadosExtraidos!);
+			if (dados) enviarMenuPrincipal(ctx, dados);
 			return;
 		}
 
 		if (session.etapa === 'editando_valor') {
-			session.dadosExtraidos!.valor = texto;
+			const dados = obterDadosExtraidos(chatId, session);
+			if (dados) {
+				dados.valor = texto;
+				armazenarDadosExtraidos(chatId, session, dados);
+			}
 			session.etapa = '';
 			await ctx.reply(`✅ Valor alterado para: *${texto}*`, { parse_mode: 'Markdown' });
-			enviarMenuPrincipal(ctx, session.dadosExtraidos!);
+			if (dados) enviarMenuPrincipal(ctx, dados);
 			return;
 		}
 
@@ -221,7 +315,7 @@ async function startBot() {
 			return;
 		}
 
-		session.dadosExtraidos = dados;
+		armazenarDadosExtraidos(chatId, session, dados);
 		session.etapa = '';
 		enviarMenuPrincipal(ctx, dados);
 	});
@@ -230,20 +324,24 @@ async function startBot() {
 	bot.action('adicionar', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
 
-		if (!session.dadosExtraidos) {
+		const dados = obterDadosExtraidos(chatId, session);
+		if (!dados) {
 			await ctx.reply('❌ Nenhum dado para adicionar.');
 			return;
 		}
 
-		enviarMenuBancos(ctx, session.dadosExtraidos);
+		enviarMenuBancos(ctx, dados);
 	});
 
 	// --- Ação: Ignorar ---
 	bot.action('ignorar', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
-		session.dadosExtraidos = null;
+		const chatId = ctx.chat?.id ?? 0;
+
+		armazenarDadosExtraidos(chatId, session, null);
 		session.etapa = '';
 		await ctx.reply('🗑️ Entrada ignorada.');
 	});
@@ -252,8 +350,10 @@ async function startBot() {
 	bot.action('editar', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
 
-		if (!session.dadosExtraidos) {
+		const dados = obterDadosExtraidos(chatId, session);
+		if (!dados) {
 			await ctx.reply('❌ Nenhum dado para editar.');
 			return;
 		}
@@ -262,7 +362,7 @@ async function startBot() {
 		await ctx.reply(
 			`🏪 Digite o novo nome do estabelecimento:`,
 			Markup.inlineKeyboard([
-				[Markup.button.callback(`Usar o mesmo: "${session.dadosExtraidos.estabelecimento}"`, 'manter_estabelecimento')],
+				[Markup.button.callback(`Usar o mesmo: "${dados.estabelecimento}"`, 'manter_estabelecimento')],
 			])
 		);
 	});
@@ -271,15 +371,17 @@ async function startBot() {
 	bot.action('manter_estabelecimento', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
 
-		if (!session.dadosExtraidos) return;
+		const dados = obterDadosExtraidos(chatId, session);
+		if (!dados) return;
 
 		// Pula para edição do valor
 		session.etapa = 'editando_valor';
 		await ctx.reply(
 			`💰 Digite o novo valor:`,
 			Markup.inlineKeyboard([
-				[Markup.button.callback(`Usar o mesmo: "${session.dadosExtraidos.valor}"`, 'manter_valor')],
+				[Markup.button.callback(`Usar o mesmo: "${dados.valor}"`, 'manter_valor')],
 			])
 		);
 	});
@@ -288,21 +390,25 @@ async function startBot() {
 	bot.action('manter_valor', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
 
-		if (!session.dadosExtraidos) return;
+		const dados = obterDadosExtraidos(chatId, session);
+		if (!dados) return;
 
 		session.etapa = '';
 		await ctx.reply('✅ Dados mantidos.');
-		enviarMenuPrincipal(ctx, session.dadosExtraidos);
+		enviarMenuPrincipal(ctx, dados);
 	});
 
 	// --- Ação: Inserir no banco selecionado ---
 	bot.action(/^inserir_(.+)$/, async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
 		const banco = ctx.match[1]; // "nubank", "itau", "caju"
 
-		if (!session.dadosExtraidos) {
+		const dados = obterDadosExtraidos(chatId, session);
+		if (!dados) {
 			await ctx.reply('❌ Nenhum dado para inserir.');
 			return;
 		}
@@ -310,13 +416,13 @@ async function startBot() {
 		const nomeBanco = banco.charAt(0).toUpperCase() + banco.slice(1);
 
 		try {
-			await inserirNaPlanilha(session.dadosExtraidos, nomeBanco);
+			await inserirNaPlanilha(dados, nomeBanco);
 
 			await ctx.reply(
 				`✅ Inserido com sucesso no *${nomeBanco}*!\n\n` +
-				`🏪 ${session.dadosExtraidos.estabelecimento}\n` +
-				`💰 ${session.dadosExtraidos.valor}\n` +
-				`📅 ${session.dadosExtraidos.data}`,
+				`🏪 ${dados.estabelecimento}\n` +
+				`💰 ${dados.valor}\n` +
+				`📅 ${dados.data}`,
 				{ parse_mode: 'Markdown' }
 			);
 		} catch (error) {
@@ -325,7 +431,7 @@ async function startBot() {
 		}
 
 		// Limpa os dados após inserir
-		session.dadosExtraidos = null;
+		armazenarDadosExtraidos(chatId, session, null);
 		session.etapa = '';
 	});
 
@@ -333,4 +439,21 @@ async function startBot() {
 	console.log('Bot started!');
 }
 
-export { startBot };
+export {
+	startBot,
+	bot,
+	processarNotificacaoExterna,
+	inserirNaPlanilha,
+	extrairValor,
+	extrairData,
+	extrairEstabelecimento,
+	extrairBanco,
+	processarNotificacao,
+	formatarResumo,
+	converterParaSheetData,
+	obterDadosExtraidos,
+	armazenarDadosExtraidos,
+	pendingData,
+	MESES_NOMES,
+};
+export type { DadosNotificacao, UserSessionData };
