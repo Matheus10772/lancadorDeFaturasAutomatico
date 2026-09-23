@@ -1,11 +1,14 @@
 import express, { Request, Response } from 'express';
 import { validarToken } from './tokenService';
-import { processarNotificacaoExterna } from './botLoadService';
+import { processarNotificacaoExterna, getWebhookCallback } from './botLoadService';
 
 // --- Configuração ---
 
 const app = express();
 app.use(express.json());
+
+// --- Rota: Webhook do Telegram ---
+app.post('/webhook-telegram', getWebhookCallback());
 
 const TELEGRAM_CHAT_ID = Number(process.env.TELEGRAM_CHAT_ID);
 

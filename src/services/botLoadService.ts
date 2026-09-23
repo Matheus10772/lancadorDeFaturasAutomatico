@@ -435,12 +435,31 @@ async function startBot() {
 		session.etapa = '';
 	});
 
-	bot.launch();
-	console.log('Bot started!');
+	// Webhook será configurado pelo servidor Express
+	console.log('Bot middleware configurado (modo webhook).');
+}
+
+/** Configura o webhook do Telegram no servidor indicado pela WEBHOOK_URL */
+async function setupWebhook(): Promise<void> {
+	const webhookUrl = process.env.WEBHOOK_URL;
+	if (!webhookUrl) throw new Error('WEBHOOK_URL não está definida no .env');
+
+	const webhookPath = '/webhook-telegram';
+	const fullUrl = `${webhookUrl}${webhookPath}`;
+
+	await bot.telegram.setWebhook(fullUrl);
+	console.log(`Webhook do Telegram configurado: ${fullUrl}`);
+}
+
+/** Retorna o callback handler do webhook para usar com Express */
+function getWebhookCallback() {
+	return bot.webhookCallback('/webhook-telegram');
 }
 
 export {
 	startBot,
+	setupWebhook,
+	getWebhookCallback,
 	bot,
 	processarNotificacaoExterna,
 	inserirNaPlanilha,
