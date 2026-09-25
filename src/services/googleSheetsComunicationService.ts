@@ -46,7 +46,7 @@ class GoogleSheetsComunicationService {
 
 	constructor() {
 		this.spreadsheetId = '1TO63oCW17vV9vUN5cWASJ0xmCcJipxxiJTM19_Y9Fdg';
-		this.KEYFILEPATH = path.join(os.homedir(), process.env.INIT_DIR!, process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
+		this.KEYFILEPATH = path.join(os.homedir(), process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
 		this.SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 	}
 

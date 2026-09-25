@@ -7,8 +7,9 @@ import { processarNotificacaoExterna, getWebhookCallback } from './botLoadServic
 const app = express();
 app.use(express.json());
 
-// --- Rota: Webhook do Telegram ---
-app.post('/webhook-telegram', getWebhookCallback());
+// --- Rota: Webhook do Telegram (path secreto + validação de secret_token) ---
+const webhookConfig = getWebhookCallback();
+app.post(webhookConfig.path, webhookConfig.handler);
 
 const TELEGRAM_CHAT_ID = Number(process.env.TELEGRAM_CHAT_ID);
 
@@ -30,6 +31,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 	}
 
 	// 2. Validar body
+	const banco = req.body?.banco;
 	const texto = req.body?.texto;
 	if (!texto || typeof texto !== 'string' || texto.trim() === '') {
 		res.status(400).json({ erro: 'Campo "texto" é obrigatório e deve ser uma string não vazia.' });
@@ -45,7 +47,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 
 	// 4. Processar e enviar menu de confirmação ao Telegram
 	try {
-		const dados = await processarNotificacaoExterna(TELEGRAM_CHAT_ID, texto.trim());
+		const dados = await processarNotificacaoExterna(TELEGRAM_CHAT_ID, texto.trim(), banco);
 
 		if (!dados) {
 			res.status(422).json({

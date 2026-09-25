@@ -78,7 +78,9 @@ function extrairEstabelecimento(texto: string): string | null {
 	return linhas.length > 0 ? linhas[0] : null;
 }
 
-function extrairBanco(texto: string): string | null {
+function extrairBanco(texto?: string): string | null {
+	if (!texto) return null;
+
 	const textoLower = texto.toLowerCase();
 
 	if (textoLower.includes('nubank') || textoLower.includes('nu ')) return 'Nubank';
@@ -86,13 +88,14 @@ function extrairBanco(texto: string): string | null {
 	if (textoLower.includes('caju') || textoLower.includes('cajú')) return 'Caju';
 
 	return null;
+
 }
 
-function processarNotificacao(texto: string): DadosNotificacao | null {
+function processarNotificacao(texto: string, bancoEnviado?: string): DadosNotificacao | null {
 	const valor: string | null = extrairValor(texto);
 	const data: string | null = extrairData(texto);
 	const estabelecimento: string | null = extrairEstabelecimento(texto);
-	const banco: string | null = extrairBanco(texto);
+	const banco: string | null = extrairBanco(bancoEnviado) ?? extrairBanco(texto);
 
 	if (!valor || !estabelecimento) return null;
 
@@ -193,8 +196,8 @@ async function inserirNaPlanilha(dados: DadosNotificacao, banco: string): Promis
  *
  * @returns Os dados extraídos ou null se não foi possível processar
  */
-async function processarNotificacaoExterna(chatId: number, texto: string): Promise<DadosNotificacao | null> {
-	const dados = processarNotificacao(texto);
+async function processarNotificacaoExterna(chatId: number, texto: string, banco?: string): Promise<DadosNotificacao | null> {
+	const dados = processarNotificacao(texto, banco);
 
 	if (!dados) {
 		await bot.telegram.sendMessage(
@@ -253,6 +256,16 @@ async function startBot() {
 
 	bot.use((ctx, next) => {
 		ctx.session = ctx.session ?? { etapa: '', dadosExtraidos: null } as UserSessionData;
+		return next();
+	});
+
+	// Middleware de autorização: só permite o chat autorizado
+	const chatIdAutorizado = Number(process.env.TELEGRAM_CHAT_ID);
+	bot.use((ctx, next) => {
+		if (ctx.chat?.id !== chatIdAutorizado) {
+			console.warn(`Acesso negado para chat ID: ${ctx.chat?.id}`);
+			return; // Ignora silenciosamente
+		}
 		return next();
 	});
 
@@ -442,18 +455,34 @@ async function startBot() {
 /** Configura o webhook do Telegram no servidor indicado pela WEBHOOK_URL */
 async function setupWebhook(): Promise<void> {
 	const webhookUrl = process.env.WEBHOOK_URL;
+	const webhookSecret = process.env.WEBHOOK_SECRET;
 	if (!webhookUrl) throw new Error('WEBHOOK_URL não está definida no .env');
+	if (!webhookSecret) throw new Error('WEBHOOK_SECRET não está definida no .env');
 
-	const webhookPath = '/webhook-telegram';
+	// Limpa webhook anterior antes de registrar o novo
+	await bot.telegram.deleteWebhook();
+	console.log('Webhook anterior removido.');
+
+	// Camada 2: path secreto (não adivinhável)
+	const webhookPath = `/webhook-telegram-${webhookSecret}`;
 	const fullUrl = `${webhookUrl}${webhookPath}`;
 
-	await bot.telegram.setWebhook(fullUrl);
-	console.log(`Webhook do Telegram configurado: ${fullUrl}`);
+	// Camada 1: secret_token — Telegram envia como header X-Telegram-Bot-Api-Secret-Token
+	await bot.telegram.setWebhook(fullUrl, { secret_token: webhookSecret });
+	console.log(`Webhook do Telegram configurado com secret_token e path secreto.`);
 }
 
-/** Retorna o callback handler do webhook para usar com Express */
+/** Retorna o path e o callback handler do webhook para usar com Express */
 function getWebhookCallback() {
-	return bot.webhookCallback('/webhook-telegram');
+	const webhookSecret = process.env.WEBHOOK_SECRET;
+	if (!webhookSecret) throw new Error('WEBHOOK_SECRET não está definida no .env');
+
+	const webhookPath = `/webhook-telegram-${webhookSecret}`;
+
+	return {
+		path: webhookPath,
+		handler: bot.webhookCallback(webhookPath, { secretToken: webhookSecret }),
+	};
 }
 
 export {
