@@ -46,7 +46,7 @@ class GoogleSheetsComunicationService {
 
 	constructor() {
 		this.spreadsheetId = '1TO63oCW17vV9vUN5cWASJ0xmCcJipxxiJTM19_Y9Fdg';
-		this.KEYFILEPATH = path.join(os.homedir(), process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
+		this.KEYFILEPATH = path.join(os.homedir(), process.env.INIT_DIR!, process.env.GOOGLE_SERVICE_ACCOUNT_KEYFILE!);
 		this.SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 	}
 
@@ -146,10 +146,12 @@ class GoogleSheetsComunicationService {
 			const aba = this.getNomeAba(dados.banco);
 			const { colunaEstabelecimento, colunaValor } = this.getColunasMes(dados.mes, dados.ano);
 
+			
+			const sheets = await this.authenticateServiceAccount();
+			
 			// Descobre a próxima linha vazia nas colunas desse mês
 			const linhaInicio = await this.encontrarProximaLinhaVazia(aba, colunaEstabelecimento);
 
-			const sheets = await this.authenticateServiceAccount();
 
 			// Cada entrada vira uma linha com 2 colunas: [estabelecimento, valor]
 			const valores: any[][] = dados.entradas.map(dado => [dado.estabelecimento, dado.valor]);
