@@ -3,6 +3,7 @@
 // =============================================
 
 process.env.TELEGRAM_CHAT_ID = '123456';
+process.env.WEBHOOK_SECRET = 'test-secret';
 
 jest.mock('dotenv', () => ({ config: jest.fn() }));
 
@@ -14,7 +15,8 @@ jest.mock('telegraf', () => ({
 		on: jest.fn(),
 		action: jest.fn(),
 		launch: jest.fn(),
-		telegram: { sendMessage: mockSendMessage },
+		telegram: { sendMessage: mockSendMessage, deleteWebhook: jest.fn(), setWebhook: jest.fn() },
+		webhookCallback: jest.fn().mockReturnValue((_req: any, _res: any, next: any) => next?.()),
 	})),
 	Markup: {
 		inlineKeyboard: jest.fn(() => ({})),
@@ -54,6 +56,16 @@ jest.mock('../../src/services/tokenService', () => ({
 		return false;
 	}),
 	getTokenFilePath: jest.fn().mockReturnValue('/tmp/tokens.json'),
+}));
+
+jest.mock('../../src/services/failedInsertionsService', () => ({
+	registrarFalha: jest.fn().mockResolvedValue({ id: 'mock-id' }),
+	listarFalhas: jest.fn().mockResolvedValue([]),
+	removerFalha: jest.fn().mockResolvedValue(true),
+	contarFalhas: jest.fn().mockResolvedValue(0),
+	getFailedInsertionsDir: jest.fn().mockReturnValue('/tmp/failed_insertions'),
+	getFailedInsertionsFilePath: jest.fn().mockReturnValue('/tmp/failed_insertions/123.json'),
+	gerarIdFalha: jest.fn().mockReturnValue('mock-id'),
 }));
 
 // =============================================

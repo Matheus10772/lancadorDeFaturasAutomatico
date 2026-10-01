@@ -59,6 +59,16 @@ jest.mock('../../src/services/tokenService', () => ({
 	getTokenFilePath: jest.fn().mockReturnValue('/tmp/tokens.json'),
 }));
 
+jest.mock('../../src/services/failedInsertionsService', () => ({
+	registrarFalha: jest.fn().mockResolvedValue({ id: 'mock-id' }),
+	listarFalhas: jest.fn().mockResolvedValue([]),
+	removerFalha: jest.fn().mockResolvedValue(true),
+	contarFalhas: jest.fn().mockResolvedValue(0),
+	getFailedInsertionsDir: jest.fn().mockReturnValue('/tmp/failed_insertions'),
+	getFailedInsertionsFilePath: jest.fn().mockReturnValue('/tmp/failed_insertions/123.json'),
+	gerarIdFalha: jest.fn().mockReturnValue('mock-id'),
+}));
+
 import {
 	processarNotificacao,
 	formatarResumo,

@@ -5,6 +5,8 @@ import { message } from 'telegraf/filters';
 import { DateTime } from 'luxon';
 import { sheetData, GoogleSheetsComunicationService } from './googleSheetsComunicationService';
 import { gerarToken } from './tokenService';
+import { registrarFalha, listarFalhas, removerFalha, contarFalhas } from './failedInsertionsService';
+import type { FailedInsertion } from './failedInsertionsService';
 
 // --- Interfaces ---
 
@@ -15,6 +17,18 @@ interface MyContext extends TelegrafContext {
 interface UserSessionData {
 	etapa: string;
 	dadosExtraidos: DadosNotificacao | null;
+	// --- Fluxo de revisão de falhas (/fails) ---
+	falhasEmRevisao: FailedInsertion[] | null;
+	indiceFalhaAtual: number;
+	falhaAtualId: string | null;
+	// --- Fluxo de reprocessamento em fila (/reprocess-pending) ---
+	reprocessItems: PendingReprocessItem[] | null;
+	reprocessIndice: number;
+}
+
+interface PendingReprocessItem {
+	texto: string;
+	banco: string;
 }
 
 interface DadosNotificacao {
@@ -249,13 +263,181 @@ function armazenarDadosExtraidos(chatId: number, session: UserSessionData, dados
 	}
 }
 
+// --- Funções auxiliares para revisão de falhas ---
+
+function formatarResumoFalha(falha: FailedInsertion, indice: number, total: number): string {
+	const bancoInfo = falha.banco ? `🏦 *Banco detectado:* ${falha.banco}` : '🏦 *Banco:* Não identificado';
+	const dataFalha = new Date(falha.falhouEm).toLocaleString('pt-BR');
+	return (
+		`⚠️ *Falha ${indice + 1} de ${total}*\n\n` +
+		`🏪 *Estabelecimento:* ${falha.estabelecimento}\n` +
+		`💰 *Valor:* ${falha.valor}\n` +
+		`📅 *Data:* ${falha.data}\n` +
+		`${bancoInfo}\n` +
+		`🏦 *Banco selecionado:* ${falha.bancoSelecionado}\n\n` +
+		`🕐 *Falhou em:* ${dataFalha}\n` +
+		`❗ *Erro:* ${falha.erro}`
+	);
+}
+
+async function mostrarFalhaAtual(ctx: any, session: UserSessionData): Promise<void> {
+	if (!session.falhasEmRevisao || session.indiceFalhaAtual >= session.falhasEmRevisao.length) {
+		session.falhasEmRevisao = null;
+		session.indiceFalhaAtual = 0;
+		session.falhaAtualId = null;
+		session.etapa = '';
+		await ctx.reply('✅ Todas as falhas foram revisadas!');
+		return;
+	}
+
+	const falha = session.falhasEmRevisao[session.indiceFalhaAtual];
+	const total = session.falhasEmRevisao.length;
+	const resumo = formatarResumoFalha(falha, session.indiceFalhaAtual, total);
+
+	await ctx.reply(
+		resumo,
+		{
+			parse_mode: 'Markdown',
+			...Markup.inlineKeyboard([
+				[Markup.button.callback('🔄 Reinserir', 'fails_retry')],
+				[Markup.button.callback('⏭️ Pular', 'fails_skip')],
+				[Markup.button.callback('🔚 Cancelar revisão', 'fails_cancel')],
+			]),
+		}
+	);
+}
+
+async function mostrarProximaFalha(ctx: any, session: UserSessionData, chatId: number): Promise<void> {
+	// Recarrega a lista de falhas do arquivo (pode ter mudado após remoção)
+	const falhasAtualizadas = await listarFalhas(chatId);
+	session.falhasEmRevisao = falhasAtualizadas;
+
+	// Encontra o próximo índice válido
+	if (session.indiceFalhaAtual >= falhasAtualizadas.length) {
+		session.indiceFalhaAtual = falhasAtualizadas.length; // vai finalizar
+	}
+
+	await mostrarFalhaAtual(ctx, session);
+}
+
+// --- Funções auxiliares para reprocessamento em fila ---
+
+/**
+ * Inicia o processamento de uma fila de itens vindos via /reprocess-pending.
+ * Armazena a fila no mapa de pendentes e envia o primeiro item ao Telegram.
+ */
+async function iniciarFilaReprocess(chatId: number, itens: PendingReprocessItem[]): Promise<void> {
+	// Armazena a fila em memória (indexada por chatId)
+	reprocessQueues.set(chatId, { items: itens, index: 0 });
+
+	await bot.telegram.sendMessage(
+		chatId,
+		`📡 *Recebidos ${itens.length} item(ns) para reprocessamento.*\nVou mostrar um a um para confirmação.`,
+		{ parse_mode: 'Markdown' }
+	);
+
+	await mostrarProximoReprocessItem(chatId);
+}
+
+/**
+ * Mostra o próximo item da fila de reprocessamento no Telegram.
+ */
+async function mostrarProximoReprocessItem(chatId: number): Promise<void> {
+	const queue = reprocessQueues.get(chatId);
+	if (!queue || queue.index >= queue.items.length) {
+		reprocessQueues.delete(chatId);
+		await bot.telegram.sendMessage(
+			chatId,
+			'✅ Todos os itens do reprocessamento foram revisados!'
+		);
+		return;
+	}
+
+	const item = queue.items[queue.index];
+	const total = queue.items.length;
+	const atual = queue.index + 1;
+	const restantes = total - atual;
+
+	// Processa o texto para extrair dados e mostrar resumo
+	const dados = processarNotificacao(item.texto, item.banco);
+
+	if (!dados) {
+		// Item não processável — pula automaticamente
+		await bot.telegram.sendMessage(
+			chatId,
+			`⏭️ *Item ${atual} de ${total}* — Não foi possível extrair informações.\nTexto: _${item.texto}_`,
+			{ parse_mode: 'Markdown' }
+		);
+		queue.index++;
+		await mostrarProximoReprocessItem(chatId);
+		return;
+	}
+
+	// Armazena os dados no pendingData para o fluxo normal funcionar
+	pendingData.set(chatId, dados);
+
+	const resumo = formatarResumo(dados);
+	await bot.telegram.sendMessage(
+		chatId,
+		`📋 *Item ${atual} de ${total}* (${restantes} restante(s))\n\n${resumo}`,
+		{
+			parse_mode: 'Markdown',
+			...Markup.inlineKeyboard([
+				[Markup.button.callback('✅ Adicionar', 'adicionar')],
+				[Markup.button.callback('✏️ Editar', 'editar')],
+				[Markup.button.callback('🗑️ Descartar', 'reprocess_discard')],
+				[Markup.button.callback('⏸️ Continuar depois', 'reprocess_later')],
+			]),
+		}
+	);
+}
+
+/**
+ * Salva os itens restantes da fila de reprocessamento como inserções falhadas.
+ */
+async function salvarRestantesComoFalhas(chatId: number): Promise<number> {
+	const queue = reprocessQueues.get(chatId);
+	if (!queue) return 0;
+
+	let salvos = 0;
+	for (let i = queue.index; i < queue.items.length; i++) {
+		const item = queue.items[i];
+		if (!item.texto || item.texto.trim() === '') continue;
+
+		const dados = processarNotificacao(item.texto, item.banco);
+		if (!dados) continue;
+
+		await registrarFalha(
+			chatId,
+			dados,
+			item.banco || 'Não definido',
+			'Adiado pelo usuário via reprocessamento'
+		);
+		salvos++;
+	}
+
+	reprocessQueues.delete(chatId);
+	return salvos;
+}
+
+// Mapa de filas de reprocessamento em memória (por chatId)
+const reprocessQueues: Map<number, { items: PendingReprocessItem[]; index: number }> = new Map();
+
 // --- Bot ---
 
 async function startBot() {
 	bot.use(session());
 
 	bot.use((ctx, next) => {
-		ctx.session = ctx.session ?? { etapa: '', dadosExtraidos: null } as UserSessionData;
+		ctx.session = ctx.session ?? {
+			etapa: '',
+			dadosExtraidos: null,
+			falhasEmRevisao: null,
+			indiceFalhaAtual: 0,
+			falhaAtualId: null,
+			reprocessItems: null,
+			reprocessIndice: 0,
+		} as UserSessionData;
 		return next();
 	});
 
@@ -354,9 +536,21 @@ async function startBot() {
 		const session = ctx.session as UserSessionData;
 		const chatId = ctx.chat?.id ?? 0;
 
+		const estaRevisandoFalhas = session.etapa === 'revisando_falhas';
+		const falhaAtualId = session.falhaAtualId;
+
 		armazenarDadosExtraidos(chatId, session, null);
-		session.etapa = '';
-		await ctx.reply('🗑️ Entrada ignorada.');
+
+		if (estaRevisandoFalhas && falhaAtualId) {
+			// Remove a falha ignorada da lista
+			await removerFalha(chatId, falhaAtualId);
+			session.falhaAtualId = null;
+			await ctx.reply('🗑️ Falha removida da lista.');
+			await mostrarProximaFalha(ctx, session, chatId);
+		} else {
+			session.etapa = '';
+			await ctx.reply('🗑️ Entrada ignorada.');
+		}
 	});
 
 	// --- Ação: Editar ---
@@ -427,6 +621,9 @@ async function startBot() {
 		}
 
 		const nomeBanco = banco.charAt(0).toUpperCase() + banco.slice(1);
+		const estaRevisandoFalhas = session.etapa === 'revisando_falhas';
+		const falhaAtualId = session.falhaAtualId;
+		const estaReprocessando = reprocessQueues.has(chatId);
 
 		try {
 			await inserirNaPlanilha(dados, nomeBanco);
@@ -438,13 +635,174 @@ async function startBot() {
 				`📅 ${dados.data}`,
 				{ parse_mode: 'Markdown' }
 			);
+
+			// Se estava revisando falhas, remove a falha que foi inserida com sucesso
+			if (estaRevisandoFalhas && falhaAtualId) {
+				await removerFalha(chatId, falhaAtualId);
+			}
 		} catch (error) {
 			console.error('Erro ao inserir na planilha:', error);
-			await ctx.reply(`❌ Erro ao inserir na planilha: ${error}`);
+			const erroStr = error instanceof Error ? error.message : String(error);
+
+			// Se já estava retentando uma falha, recolocamos na lista
+			if (estaRevisandoFalhas && falhaAtualId) {
+				// A falha original já está na lista — só não removemos ela
+				await ctx.reply(
+					`❌ Erro ao inserir na planilha novamente. O item permanece na lista de falhas.\n` +
+					`Erro: ${erroStr}`
+				);
+			} else {
+				// Primeira falha: registra no arquivo
+				await registrarFalha(chatId, dados, nomeBanco, erroStr);
+				const totalFalhas = await contarFalhas(chatId);
+				await ctx.reply(
+					`❌ Erro ao inserir na planilha: ${erroStr}\n\n` +
+					`📋 A inserção foi salva na fila de falhas. ` +
+					`Você tem *${totalFalhas}* inserção(ões) pendente(s).\n` +
+					`Use /fails para revisar.`,
+					{ parse_mode: 'Markdown' }
+				);
+			}
 		}
 
-		// Limpa os dados após inserir
+		// Limpa os dados atuais
 		armazenarDadosExtraidos(chatId, session, null);
+
+		// Decide para onde voltar após a inserção
+		if (estaRevisandoFalhas) {
+			session.falhaAtualId = null;
+			await mostrarProximaFalha(ctx, session, chatId);
+		} else if (estaReprocessando) {
+			const queue = reprocessQueues.get(chatId);
+			if (queue) {
+				queue.index++;
+				await mostrarProximoReprocessItem(chatId);
+			}
+			session.etapa = '';
+		} else {
+			session.etapa = '';
+		}
+	});
+
+	// --- Comando: Listar inserções falhadas ---
+	bot.command('fails', async (ctx) => {
+		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat.id;
+
+		const falhas = await listarFalhas(chatId);
+
+		if (falhas.length === 0) {
+			await ctx.reply('✅ Nenhuma inserção falhada pendente!');
+			return;
+		}
+
+		await ctx.reply(
+			`📋 Você tem *${falhas.length}* inserção(ões) falhada(s) pendente(s).`,
+			{ parse_mode: 'Markdown' }
+		);
+
+		// Armazena a lista na sessão e começa a mostrar uma por uma
+		session.falhasEmRevisao = falhas;
+		session.indiceFalhaAtual = 0;
+		session.etapa = 'revisando_falhas';
+
+		await mostrarFalhaAtual(ctx, session);
+	});
+
+	// --- Ação: Retentar inserção falhada ---
+	bot.action('fails_retry', async (ctx) => {
+		await ctx.answerCbQuery();
+		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
+
+		if (!session.falhasEmRevisao || session.indiceFalhaAtual >= session.falhasEmRevisao.length) {
+			await ctx.reply('❌ Nenhuma falha para retentar.');
+			return;
+		}
+
+		const falha = session.falhasEmRevisao[session.indiceFalhaAtual];
+
+		// Converte a falha em DadosNotificacao e coloca no menu de confirmação
+		const dados: DadosNotificacao = {
+			estabelecimento: falha.estabelecimento,
+			valor: falha.valor,
+			data: falha.data,
+			banco: falha.banco,
+		};
+
+		session.falhaAtualId = falha.id;
+		armazenarDadosExtraidos(chatId, session, dados);
+		// etapa permanece 'revisando_falhas' para que o handler de inserir_ saiba voltar para a lista
+
+		enviarMenuPrincipal(ctx, dados);
+	});
+
+	// --- Ação: Pular falha atual ---
+	bot.action('fails_skip', async (ctx) => {
+		await ctx.answerCbQuery();
+		const session = ctx.session as UserSessionData;
+		const chatId = ctx.chat?.id ?? 0;
+
+		if (!session.falhasEmRevisao) {
+			await ctx.reply('❌ Nenhuma lista de falhas ativa.');
+			return;
+		}
+
+		session.indiceFalhaAtual++;
+		await mostrarProximaFalha(ctx, session, chatId);
+	});
+
+	// --- Ação: Cancelar revisão de falhas ---
+	bot.action('fails_cancel', async (ctx) => {
+		await ctx.answerCbQuery();
+		const session = ctx.session as UserSessionData;
+
+		session.falhasEmRevisao = null;
+		session.indiceFalhaAtual = 0;
+		session.falhaAtualId = null;
+		session.etapa = '';
+		await ctx.reply('🔚 Revisão de falhas encerrada.');
+	});
+	// --- Ação: Descartar item do reprocessamento ---
+	bot.action('reprocess_discard', async (ctx) => {
+		await ctx.answerCbQuery();
+		const chatId = ctx.chat?.id ?? 0;
+		const session = ctx.session as UserSessionData;
+
+		armazenarDadosExtraidos(chatId, session, null);
+
+		const queue = reprocessQueues.get(chatId);
+		if (!queue) {
+			await ctx.reply('❌ Nenhuma fila de reprocessamento ativa.');
+			return;
+		}
+
+		await ctx.reply('🗑️ Item descartado.');
+		queue.index++;
+		await mostrarProximoReprocessItem(chatId);
+	});
+
+	// --- Ação: Continuar depois (salva restantes como falhas) ---
+	bot.action('reprocess_later', async (ctx) => {
+		await ctx.answerCbQuery();
+		const chatId = ctx.chat?.id ?? 0;
+		const session = ctx.session as UserSessionData;
+
+		armazenarDadosExtraidos(chatId, session, null);
+
+		const salvos = await salvarRestantesComoFalhas(chatId);
+
+		if (salvos > 0) {
+			await ctx.reply(
+				`⏸️ Reprocessamento pausado.\n\n` +
+				`📋 *${salvos}* item(ns) salvo(s) na fila de falhas.\n` +
+				`Use /fails para revisar quando quiser.`,
+				{ parse_mode: 'Markdown' }
+			);
+		} else {
+			await ctx.reply('⏸️ Reprocessamento pausado. Nenhum item restante para salvar.');
+		}
+
 		session.etapa = '';
 	});
 
@@ -498,10 +856,17 @@ export {
 	extrairBanco,
 	processarNotificacao,
 	formatarResumo,
+	formatarResumoFalha,
 	converterParaSheetData,
 	obterDadosExtraidos,
 	armazenarDadosExtraidos,
+	mostrarFalhaAtual,
+	mostrarProximaFalha,
+	iniciarFilaReprocess,
+	mostrarProximoReprocessItem,
+	salvarRestantesComoFalhas,
+	reprocessQueues,
 	pendingData,
 	MESES_NOMES,
 };
-export type { DadosNotificacao, UserSessionData };
+export type { DadosNotificacao, UserSessionData, PendingReprocessItem };

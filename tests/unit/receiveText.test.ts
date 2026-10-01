@@ -33,16 +33,28 @@ jest.mock('../../src/services/botLoadService', () => ({
   processarNotificacaoExterna: (...args: any[]) => mockProcessarNotificacaoExterna(...args),
   bot: { telegram: { sendMessage: jest.fn() } },
   startBot: jest.fn(),
+  setupWebhook: jest.fn(),
+  getWebhookCallback: jest.fn().mockReturnValue({
+    path: '/webhook-telegram-test',
+    handler: (_req: any, _res: any, next: any) => next?.(),
+  }),
+  iniciarFilaReprocess: jest.fn().mockResolvedValue(undefined),
   extrairValor: jest.fn(),
   extrairData: jest.fn(),
   extrairEstabelecimento: jest.fn(),
   extrairBanco: jest.fn(),
   processarNotificacao: jest.fn(),
   formatarResumo: jest.fn(),
+  formatarResumoFalha: jest.fn(),
   converterParaSheetData: jest.fn(),
   inserirNaPlanilha: jest.fn(),
   obterDadosExtraidos: jest.fn(),
   armazenarDadosExtraidos: jest.fn(),
+  mostrarFalhaAtual: jest.fn(),
+  mostrarProximaFalha: jest.fn(),
+  mostrarProximoReprocessItem: jest.fn(),
+  salvarRestantesComoFalhas: jest.fn(),
+  reprocessQueues: new Map(),
   pendingData: new Map(),
   MESES_NOMES: [],
 }));
@@ -180,6 +192,7 @@ describe('POST /webhook-macrodroid', () => {
     expect(mockProcessarNotificacaoExterna).toHaveBeenCalledWith(
       123456,
       textoEnviado.trim(),
+      undefined,
     );
   });
 });

@@ -3,8 +3,6 @@ import path from 'path';
 import fs, { ReadStream } from 'fs';
 import csv from 'csv-parser';
 import https from 'https';
-import Stream from 'stream';
-import { file } from 'googleapis/build/src/apis/file';
 import dotenv from 'dotenv';
 import { spawn } from 'child_process';
 import { normalizeName } from '../utils/padronizacaoDeNomes'
