@@ -26,15 +26,17 @@ jest.mock('../../src/services/tokenService', () => ({
 const mockReadFile = jest.fn();
 const mockWriteFile = jest.fn();
 const mockMkdir = jest.fn();
+const mockUnlink = jest.fn();
 jest.mock('fs/promises', () => ({
   readFile: (...args: any[]) => mockReadFile(...args),
   writeFile: (...args: any[]) => mockWriteFile(...args),
   mkdir: (...args: any[]) => mockMkdir(...args),
+  unlink: (...args: any[]) => mockUnlink(...args),
 }));
 
 import {
   processarNotificacao,
-  formatarResumoFalha,
+  formatarResumo,
   converterParaSheetData,
 } from '../../src/services/botLoadService';
 import { registrarFalha, listarFalhas, removerFalha, contarFalhas } from '../../src/services/failedInsertionsService';
@@ -93,14 +95,19 @@ describe('E2E: Fluxo de Falhas de Inserção', () => {
     expect(falhas.length).toBe(1);
 
     const falha = falhas[0];
-    const resumo = formatarResumoFalha(falha, 0, 1);
-    
-    expect(resumo).toContain('Falha 1 de 1');
+    // Itens de falha entram na fila com os dados já processados e usam o mesmo resumo
+    const resumo = formatarResumo({
+      estabelecimento: falha.estabelecimento,
+      valor: falha.valor,
+      data: falha.data,
+      banco: falha.banco,
+    });
+
     expect(resumo).toContain('*Estabelecimento:* Loja');
     expect(resumo).toContain('*Valor:* R$ 50,00');
     expect(resumo).toContain('*Data:* 12/10/2026');
-    expect(resumo).toContain('*Banco selecionado:* Itaú');
-    expect(resumo).toContain('*Erro:* Erro auth');
+    expect(resumo).toContain('*Banco detectado:* Itaú');
+    expect(falha.erro).toBe('Erro auth');
   });
 
   it('Fluxo: registrar falha -> remover falha -> verificar lista vazia', async () => {

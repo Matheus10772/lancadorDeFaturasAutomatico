@@ -1,5 +1,5 @@
 # Etapa 1: Compilar o TypeScript
-FROM node:18-slim AS builder
+FROM node:24-slim AS builder
 
 # Diretório de trabalho da aplicação
 WORKDIR /app
@@ -11,7 +11,7 @@ COPY package*.json ./
 RUN npm install
 
 # Copia o restante do código-fonte
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY index.ts ./
 
@@ -19,7 +19,7 @@ COPY index.ts ./
 RUN npm run build
 
 # Etapa 2: Imagem leve para produção
-FROM node:18-slim
+FROM node:24-slim
 
 # Cria diretório persistente no local esperado pela aplicação
 RUN mkdir -p /home/node/.lancadorDeFaturaAutomatico/faturas \

@@ -75,6 +75,7 @@ class GoogleSheetsComunicationService {
 
 		// Calcula quantos meses de distância do ponto base (outubro/2026)
 		const anoNum = Number(ano);
+		if (!Number.isInteger(anoNum)) throw new Error(`Ano inválido: ${ano}`);
 		const mesesDesdeBase = (anoNum - ANO_BASE) * 12 + (mesIndex - MES_BASE_INDEX);
 
 		if (mesesDesdeBase < 0) throw new Error(`Data ${mes}/${ano} é anterior ao início da planilha (outubro/2026)`);

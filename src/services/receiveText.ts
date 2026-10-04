@@ -31,6 +31,7 @@ function corrigirEParsearJson(raw: string): PendingReprocessItem[] {
 	}
 
 	// Remove vírgula(s) final(is) antes do ']'
+	corrigido = corrigido.replace(/[\n]/g, '');
 	corrigido = corrigido.replace(/,\s*\]$/, ']');
 
 	return JSON.parse(corrigido) as PendingReprocessItem[];
@@ -54,6 +55,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 	const authHeader = req.headers.authorization;
 	if (!authHeader || !authHeader.startsWith('Bearer ')) {
 		res.status(401).json({ erro: 'Token de autenticação não fornecido. Use o header Authorization: Bearer <token>' });
+		console.error('Token de autenticação não fornecido no header Authorization.');
 		return;
 	}
 
@@ -61,6 +63,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 	const tokenValido = await validarToken(token);
 	if (!tokenValido) {
 		res.status(401).json({ erro: 'Token de autenticação inválido.' });
+		console.error('Token de autenticação inválido fornecido no header Authorization.');
 		return;
 	}
 
@@ -69,6 +72,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 	const texto = req.body?.texto;
 	if (!texto || typeof texto !== 'string' || texto.trim() === '') {
 		res.status(400).json({ erro: 'Campo "texto" é obrigatório e deve ser uma string não vazia.' });
+		console.error('Campo "texto" ausente ou inválido no body da requisição.');
 		return;
 	}
 
@@ -76,6 +80,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 	if (!TELEGRAM_CHAT_ID || isNaN(TELEGRAM_CHAT_ID)) {
 		console.error('TELEGRAM_CHAT_ID não está configurado ou é inválido.');
 		res.status(500).json({ erro: 'Configuração do servidor incompleta: TELEGRAM_CHAT_ID não definido.' });
+		console.error('TELEGRAM_CHAT_ID não está configurado ou é inválido.');
 		return;
 	}
 
@@ -88,6 +93,7 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 				erro: 'Não foi possível extrair informações do texto.',
 				detalhe: 'Certifique-se de que o texto contém o valor (R$) e o nome do estabelecimento.',
 			});
+			console.error('Não foi possível extrair informações do texto recebido do MacroDroid.');
 			return;
 		}
 
@@ -100,6 +106,8 @@ app.post('/webhook-macrodroid', async (req: Request, res: Response): Promise<voi
 				banco: dados.banco,
 			},
 		});
+
+		console.log(`Notificação recebida do MacroDroid e enviada para o Telegram: ${JSON.stringify(dados)}`);
 	} catch (error) {
 		console.error('Erro ao processar notificação via HTTP:', error);
 		res.status(500).json({ erro: 'Erro interno ao processar a notificação.' });
@@ -164,6 +172,7 @@ app.post('/reprocess-pending', express.text({ type: '*/*' }), async (req: Reques
 			totalRecebidos: itens.length,
 			totalValidos: itensValidos.length,
 			totalDescartados: itens.length - itensValidos.length,
+			status: 200
 		});
 	} catch (error) {
 		console.error('Erro ao iniciar reprocessamento:', error);
@@ -183,4 +192,3 @@ function startServer(porta: number = 3000): Promise<void> {
 }
 
 export { app, startServer, corrigirEParsearJson };
-export type { PendingReprocessItem };

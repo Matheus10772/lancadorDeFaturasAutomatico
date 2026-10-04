@@ -5,8 +5,16 @@ import { message } from 'telegraf/filters';
 import { DateTime } from 'luxon';
 import { sheetData, GoogleSheetsComunicationService } from './googleSheetsComunicationService';
 import { gerarToken } from './tokenService';
-import { registrarFalha, listarFalhas, removerFalha, contarFalhas } from './failedInsertionsService';
-import type { FailedInsertion } from './failedInsertionsService';
+import { registrarFalha, listarFalhas, removerFalhasDoItem } from './failedInsertionsService';
+import {
+	adicionarItensNaFila,
+	proximoItem,
+	removerPrimeiroItem,
+	atualizarPrimeiroItem,
+	contarItens,
+	salvarFilasEmDisco,
+} from './queueService';
+import type { NovoQueueItem, QueueItem } from './queueService';
 
 // --- Interfaces ---
 
@@ -17,18 +25,6 @@ interface MyContext extends TelegrafContext {
 interface UserSessionData {
 	etapa: string;
 	dadosExtraidos: DadosNotificacao | null;
-	// --- Fluxo de revisão de falhas (/fails) ---
-	falhasEmRevisao: FailedInsertion[] | null;
-	indiceFalhaAtual: number;
-	falhaAtualId: string | null;
-	// --- Fluxo de reprocessamento em fila (/reprocess-pending) ---
-	reprocessItems: PendingReprocessItem[] | null;
-	reprocessIndice: number;
-}
-
-interface PendingReprocessItem {
-	texto: string;
-	banco: string;
 }
 
 interface DadosNotificacao {
@@ -44,9 +40,9 @@ dotenv.config();
 const bot: Telegraf<MyContext> = new Telegraf(process.env.BOT_TOKEN!);
 const googleSheetsService: GoogleSheetsComunicationService = new GoogleSheetsComunicationService();
 
-// --- Mapa de dados pendentes (vindos via HTTP) ---
-// Armazena dados processados de notificações recebidas via HTTP
-// que aguardam confirmação do usuário no Telegram.
+// --- Mapa de dados do item em exibição ---
+// Armazena os dados processados do item da fila que está aguardando
+// confirmação do usuário no Telegram (fonte de verdade para as actions).
 const pendingData: Map<number, DadosNotificacao> = new Map();
 
 // --- Funções de extração ---
@@ -69,7 +65,7 @@ function extrairData(texto: string): string | null {
 	const matchCurta = texto.match(regexCurta);
 	if (matchCurta) return matchCurta[1];
 
-	return DateTime.now().toFormat('dd/MM/yyyy hh:mm'); // Retorna a data atual se não encontrar nenhuma
+	return DateTime.now().toFormat('dd/MM/yyyy HH:mm'); // Retorna a data atual se não encontrar nenhuma
 }
 
 function extrairEstabelecimento(texto: string): string | null {
@@ -125,9 +121,18 @@ function processarNotificacao(texto: string, bancoEnviado?: string): DadosNotifi
 
 // --- Funções de mensagem ---
 
+/**
+ * Escapa os caracteres especiais do Markdown (legado) do Telegram.
+ * Sem isso, textos como "IFD*RESTAURANTE" ou "Var_nubank" fazem o Telegram
+ * rejeitar a mensagem inteira ("can't parse entities").
+ */
+function escaparMarkdown(texto: string): string {
+	return texto.replace(/([_*`\[])/g, '\\$1');
+}
+
 function formatarResumo(dados: DadosNotificacao): string {
-	const bancoInfo = dados.banco ? `🏦 *Banco detectado:* ${dados.banco}` : '🏦 *Banco:* Não identificado';
-	return `📋 *Dados detectados:*\n\n🏪 *Estabelecimento:* ${dados.estabelecimento}\n💰 *Valor:* ${dados.valor}\n📅 *Data:* ${dados.data}\n${bancoInfo}`;
+	const bancoInfo = dados.banco ? `🏦 *Banco detectado:* ${escaparMarkdown(dados.banco)}` : '🏦 *Banco:* Não identificado';
+	return `📋 *Dados detectados:*\n\n🏪 *Estabelecimento:* ${escaparMarkdown(dados.estabelecimento)}\n💰 *Valor:* ${escaparMarkdown(dados.valor)}\n📅 *Data:* ${escaparMarkdown(dados.data)}\n${bancoInfo}`;
 }
 
 function enviarMenuPrincipal(ctx: any, dados: DadosNotificacao) {
@@ -167,13 +172,27 @@ const MESES_NOMES: string[] = [
 	'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
 ];
 
-function converterParaSheetData(dados: DadosNotificacao, banco: string): sheetData {
-	// Extrai mês e ano da data (formato "dd/MM/yyyy" ou "dd/MM")
-	const partesData = dados.data.split('/');
-	const mesNumero = parseInt(partesData[1], 10); // 1-12
-	const ano = partesData[2] ?? DateTime.now().toFormat('yyyy');
+/**
+ * Extrai mês (nome) e ano (4 dígitos) de uma data nos formatos "dd/MM", "dd/MM/yy",
+ * "dd/MM/yyyy" ou "dd/MM/yyyy HH:mm". Sem data reconhecível, usa o mês/ano atual.
+ */
+function extrairMesAno(data: string): { mes: string; ano: string } {
+	const agora = DateTime.now();
+	const match = data.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
 
-	const mes = MESES_NOMES[mesNumero - 1];
+	const mesNumero = match ? parseInt(match[2], 10) : agora.month;
+	let anoNumero = match?.[3] ? parseInt(match[3], 10) : agora.year;
+	if (anoNumero < 100) anoNumero += 2000; // "26" → 2026
+
+	if (mesNumero < 1 || mesNumero > 12) {
+		throw new Error(`Mês inválido na data "${data}"`);
+	}
+
+	return { mes: MESES_NOMES[mesNumero - 1], ano: String(anoNumero) };
+}
+
+function converterParaSheetData(dados: DadosNotificacao, banco: string): sheetData {
+	const { mes, ano } = extrairMesAno(dados.data);
 
 	// Converte o valor de "R$ 12,34" para número
 	const valorNumerico = Number(
@@ -183,7 +202,7 @@ function converterParaSheetData(dados: DadosNotificacao, banco: string): sheetDa
 	return {
 		banco,
 		mes,
-		ano: ano.toString(),
+		ano,
 		entradas: [{ estabelecimento: dados.estabelecimento, valor: valorNumerico }],
 	};
 }
@@ -201,12 +220,150 @@ async function inserirNaPlanilha(dados: DadosNotificacao, banco: string): Promis
 	await googleSheetsService.inserirInformacoesPlanilha(sheetDataConvertido);
 }
 
-// --- Processamento de notificação externa (via HTTP) ---
+// --- Fila unificada ---
+
+/**
+ * Obtém os dados do item em exibição. Prioriza o mapa de pendentes (item da fila)
+ * e usa a session apenas como fallback.
+ */
+function obterDadosExtraidos(chatId: number, session: UserSessionData): DadosNotificacao | null {
+	return pendingData.get(chatId) ?? session.dadosExtraidos ?? null;
+}
+
+/**
+ * Armazena dados extraídos tanto na session quanto no mapa de pendentes.
+ */
+function armazenarDadosExtraidos(chatId: number, session: UserSessionData, dados: DadosNotificacao | null): void {
+	session.dadosExtraidos = dados;
+	if (dados) {
+		pendingData.set(chatId, dados);
+	} else {
+		pendingData.delete(chatId);
+	}
+}
+
+/**
+ * Mostra o primeiro item da fila (sem removê-lo) com os botões de ação.
+ * Itens não processáveis são pulados automaticamente.
+ */
+async function mostrarProximoItemFila(chatId: number): Promise<void> {
+	while (true) {
+		const item = proximoItem(chatId);
+
+		if (!item) {
+			pendingData.delete(chatId);
+			await bot.telegram.sendMessage(chatId, '✅ Todos os itens da fila foram processados!');
+			return;
+		}
+
+		// Itens vindos de falhas já têm os dados processados
+		const dados: DadosNotificacao | null = item.dadosProcessados
+			? { ...item.dadosProcessados }
+			: processarNotificacao(item.texto, item.banco);
+
+		if (!dados) {
+			await bot.telegram.sendMessage(chatId, '⏭️ Item não processável (sem valor/estabelecimento). Pulando...');
+			removerPrimeiroItem(chatId);
+			continue;
+		}
+
+		pendingData.set(chatId, dados);
+
+		const total = contarItens(chatId);
+		await bot.telegram.sendMessage(
+			chatId,
+			`📋 *Item 1 de ${total}*\n\n${formatarResumo(dados)}`,
+			{
+				parse_mode: 'Markdown',
+				...Markup.inlineKeyboard([
+					[Markup.button.callback('✅ Adicionar', 'adicionar')],
+					[Markup.button.callback('✏️ Editar', 'editar')],
+					[Markup.button.callback('🗑️ Descartar', 'queue_discard')],
+					[Markup.button.callback('⏸️ Continuar depois', 'queue_later')],
+				]),
+			}
+		);
+		return;
+	}
+}
+
+/**
+ * Adiciona itens na fila. Se a fila estava vazia, mostra o primeiro item;
+ * caso contrário, apenas avisa que o item foi enfileirado.
+ */
+async function enfileirarEMostrar(chatId: number, itens: NovoQueueItem[]): Promise<void> {
+	const filaEstavaVazia = contarItens(chatId) === 0;
+	const adicionados = adicionarItensNaFila(chatId, itens);
+
+	if (adicionados === 0) {
+		await bot.telegram.sendMessage(chatId, '⚠️ Item já está na fila.');
+		return;
+	}
+
+	if (filaEstavaVazia) {
+		await mostrarProximoItemFila(chatId);
+		return;
+	}
+
+	await bot.telegram.sendMessage(
+		chatId,
+		`📡 ${adicionados} item(ns) adicionado(s) à fila. Total pendente: ${contarItens(chatId)}.\nUse /fila para ver a fila.`
+	);
+}
+
+/**
+ * Remove o item atual da fila, limpa os dados em exibição e mostra o próximo.
+ */
+async function avancarFila(chatId: number, session: UserSessionData): Promise<void> {
+	removerPrimeiroItem(chatId);
+	armazenarDadosExtraidos(chatId, session, null);
+	session.etapa = '';
+	await mostrarProximoItemFila(chatId);
+}
+
+/**
+ * Remove do arquivo de falhas tudo o que estiver ligado ao item (pelo falhaId ou pelo ID de origem).
+ */
+async function removerFalhasLigadas(chatId: number, item: QueueItem): Promise<void> {
+	await removerFalhasDoItem(chatId, { falhaId: item.falhaId, origemId: item.id });
+}
+
+/**
+ * Trata uma falha de inserção na planilha: registra a falha (uma única vez por item),
+ * avisa o usuário e mostra o mesmo item novamente, para que ele possa tentar de novo,
+ * editar, descartar ou continuar depois.
+ */
+async function tratarErroInsercao(chatId: number, dados: DadosNotificacao, nomeBanco: string, erroStr: string): Promise<void> {
+	const item = proximoItem(chatId);
+
+	// Itens vindos de /fila (ou que já falharam antes) já têm uma falha registrada
+	let falhaId = item?.falhaId;
+	if (!falhaId) {
+		try {
+			// origemId = ID do item da fila: o mesmo item nunca gera duas falhas
+			falhaId = (await registrarFalha(chatId, dados, nomeBanco, erroStr, item?.id)).id;
+		} catch (erroRegistro) {
+			console.error('Erro ao registrar falha de inserção:', erroRegistro);
+		}
+	}
+
+	const proximoPasso = item
+		? 'O item continua na fila: você pode tentar adicionar de novo, editar, descartar ou continuar depois.'
+		: 'A inserção foi salva nas falhas. Use /fila para tentar novamente.';
+
+	// Sem parse_mode: a mensagem de erro pode conter "_" ou "*" (ex.: "Var_nubank")
+	await bot.telegram.sendMessage(chatId, `❌ Erro ao inserir dado na planilha.\n\nErro: ${erroStr}\n\n${proximoPasso}`);
+
+	if (item) {
+		// Mantém o item no topo da fila com os dados atuais (inclusive edições) e vinculado à falha
+		atualizarPrimeiroItem(chatId, { dadosProcessados: { ...dados }, falhaId });
+		await mostrarProximoItemFila(chatId);
+	}
+}
 
 /**
  * Processa uma notificação recebida via HTTP (MacroDroid).
- * Extrai os dados, armazena no mapa de pendentes, e envia o menu de confirmação
- * ao chat do Telegram para o usuário aprovar.
+ * Valida o texto e o adiciona na fila unificada do chat.
  *
  * @returns Os dados extraídos ou null se não foi possível processar
  */
@@ -222,206 +379,28 @@ async function processarNotificacaoExterna(chatId: number, texto: string, banco?
 		return null;
 	}
 
-	// Armazena no mapa de dados pendentes
-	pendingData.set(chatId, dados);
-
-	// Envia menu de confirmação ao Telegram
-	const resumo = formatarResumo(dados);
-	await bot.telegram.sendMessage(
-		chatId,
-		`📡 *Notificação recebida via MacroDroid:*\n\n${resumo}`,
-		{
-			parse_mode: 'Markdown',
-			...Markup.inlineKeyboard([
-				[Markup.button.callback('✅ Adicionar', 'adicionar')],
-				[Markup.button.callback('✏️ Editar', 'editar')],
-				[Markup.button.callback('❌ Ignorar', 'ignorar')],
-			]),
-		}
-	);
+	await enfileirarEMostrar(chatId, [{ texto, banco: banco ?? '', origem: 'macrodroid' }]);
 
 	return dados;
 }
 
 /**
- * Obtém os dados extraídos para um chat, verificando tanto a session quanto o mapa de pendentes.
- * Prioriza dados da session (interação direta com o bot).
+ * Adiciona uma lista de itens vindos via /reprocess-pending na fila unificada.
  */
-function obterDadosExtraidos(chatId: number, session: UserSessionData): DadosNotificacao | null {
-	return session.dadosExtraidos ?? pendingData.get(chatId) ?? null;
-}
-
-/**
- * Armazena dados extraídos tanto na session quanto no mapa de pendentes.
- */
-function armazenarDadosExtraidos(chatId: number, session: UserSessionData, dados: DadosNotificacao | null): void {
-	session.dadosExtraidos = dados;
-	if (dados) {
-		pendingData.set(chatId, dados);
-	} else {
-		pendingData.delete(chatId);
-	}
-}
-
-// --- Funções auxiliares para revisão de falhas ---
-
-function formatarResumoFalha(falha: FailedInsertion, indice: number, total: number): string {
-	const bancoInfo = falha.banco ? `🏦 *Banco detectado:* ${falha.banco}` : '🏦 *Banco:* Não identificado';
-	const dataFalha = new Date(falha.falhouEm).toLocaleString('pt-BR');
-	return (
-		`⚠️ *Falha ${indice + 1} de ${total}*\n\n` +
-		`🏪 *Estabelecimento:* ${falha.estabelecimento}\n` +
-		`💰 *Valor:* ${falha.valor}\n` +
-		`📅 *Data:* ${falha.data}\n` +
-		`${bancoInfo}\n` +
-		`🏦 *Banco selecionado:* ${falha.bancoSelecionado}\n\n` +
-		`🕐 *Falhou em:* ${dataFalha}\n` +
-		`❗ *Erro:* ${falha.erro}`
-	);
-}
-
-async function mostrarFalhaAtual(ctx: any, session: UserSessionData): Promise<void> {
-	if (!session.falhasEmRevisao || session.indiceFalhaAtual >= session.falhasEmRevisao.length) {
-		session.falhasEmRevisao = null;
-		session.indiceFalhaAtual = 0;
-		session.falhaAtualId = null;
-		session.etapa = '';
-		await ctx.reply('✅ Todas as falhas foram revisadas!');
-		return;
-	}
-
-	const falha = session.falhasEmRevisao[session.indiceFalhaAtual];
-	const total = session.falhasEmRevisao.length;
-	const resumo = formatarResumoFalha(falha, session.indiceFalhaAtual, total);
-
-	await ctx.reply(
-		resumo,
-		{
-			parse_mode: 'Markdown',
-			...Markup.inlineKeyboard([
-				[Markup.button.callback('🔄 Reinserir', 'fails_retry')],
-				[Markup.button.callback('⏭️ Pular', 'fails_skip')],
-				[Markup.button.callback('🔚 Cancelar revisão', 'fails_cancel')],
-			]),
-		}
-	);
-}
-
-async function mostrarProximaFalha(ctx: any, session: UserSessionData, chatId: number): Promise<void> {
-	// Recarrega a lista de falhas do arquivo (pode ter mudado após remoção)
-	const falhasAtualizadas = await listarFalhas(chatId);
-	session.falhasEmRevisao = falhasAtualizadas;
-
-	// Encontra o próximo índice válido
-	if (session.indiceFalhaAtual >= falhasAtualizadas.length) {
-		session.indiceFalhaAtual = falhasAtualizadas.length; // vai finalizar
-	}
-
-	await mostrarFalhaAtual(ctx, session);
-}
-
-// --- Funções auxiliares para reprocessamento em fila ---
-
-/**
- * Inicia o processamento de uma fila de itens vindos via /reprocess-pending.
- * Armazena a fila no mapa de pendentes e envia o primeiro item ao Telegram.
- */
-async function iniciarFilaReprocess(chatId: number, itens: PendingReprocessItem[]): Promise<void> {
-	// Armazena a fila em memória (indexada por chatId)
-	reprocessQueues.set(chatId, { items: itens, index: 0 });
+async function iniciarFilaReprocess(chatId: number, itens: { texto: string; banco: string }[]): Promise<void> {
+	const novos: NovoQueueItem[] = itens.map(i => ({ texto: i.texto, banco: i.banco, origem: 'reprocess' }));
+	const adicionados = adicionarItensNaFila(chatId, novos);
 
 	await bot.telegram.sendMessage(
 		chatId,
-		`📡 *Recebidos ${itens.length} item(ns) para reprocessamento.*\nVou mostrar um a um para confirmação.`,
+		`📡 *${adicionados} item(ns) adicionado(s) à fila.*`,
 		{ parse_mode: 'Markdown' }
 	);
 
-	await mostrarProximoReprocessItem(chatId);
-}
-
-/**
- * Mostra o próximo item da fila de reprocessamento no Telegram.
- */
-async function mostrarProximoReprocessItem(chatId: number): Promise<void> {
-	const queue = reprocessQueues.get(chatId);
-	if (!queue || queue.index >= queue.items.length) {
-		reprocessQueues.delete(chatId);
-		await bot.telegram.sendMessage(
-			chatId,
-			'✅ Todos os itens do reprocessamento foram revisados!'
-		);
-		return;
+	if (adicionados > 0) {
+		await mostrarProximoItemFila(chatId);
 	}
-
-	const item = queue.items[queue.index];
-	const total = queue.items.length;
-	const atual = queue.index + 1;
-	const restantes = total - atual;
-
-	// Processa o texto para extrair dados e mostrar resumo
-	const dados = processarNotificacao(item.texto, item.banco);
-
-	if (!dados) {
-		// Item não processável — pula automaticamente
-		await bot.telegram.sendMessage(
-			chatId,
-			`⏭️ *Item ${atual} de ${total}* — Não foi possível extrair informações.\nTexto: _${item.texto}_`,
-			{ parse_mode: 'Markdown' }
-		);
-		queue.index++;
-		await mostrarProximoReprocessItem(chatId);
-		return;
-	}
-
-	// Armazena os dados no pendingData para o fluxo normal funcionar
-	pendingData.set(chatId, dados);
-
-	const resumo = formatarResumo(dados);
-	await bot.telegram.sendMessage(
-		chatId,
-		`📋 *Item ${atual} de ${total}* (${restantes} restante(s))\n\n${resumo}`,
-		{
-			parse_mode: 'Markdown',
-			...Markup.inlineKeyboard([
-				[Markup.button.callback('✅ Adicionar', 'adicionar')],
-				[Markup.button.callback('✏️ Editar', 'editar')],
-				[Markup.button.callback('🗑️ Descartar', 'reprocess_discard')],
-				[Markup.button.callback('⏸️ Continuar depois', 'reprocess_later')],
-			]),
-		}
-	);
 }
-
-/**
- * Salva os itens restantes da fila de reprocessamento como inserções falhadas.
- */
-async function salvarRestantesComoFalhas(chatId: number): Promise<number> {
-	const queue = reprocessQueues.get(chatId);
-	if (!queue) return 0;
-
-	let salvos = 0;
-	for (let i = queue.index; i < queue.items.length; i++) {
-		const item = queue.items[i];
-		if (!item.texto || item.texto.trim() === '') continue;
-
-		const dados = processarNotificacao(item.texto, item.banco);
-		if (!dados) continue;
-
-		await registrarFalha(
-			chatId,
-			dados,
-			item.banco || 'Não definido',
-			'Adiado pelo usuário via reprocessamento'
-		);
-		salvos++;
-	}
-
-	reprocessQueues.delete(chatId);
-	return salvos;
-}
-
-// Mapa de filas de reprocessamento em memória (por chatId)
-const reprocessQueues: Map<number, { items: PendingReprocessItem[]; index: number }> = new Map();
 
 // --- Bot ---
 
@@ -429,15 +408,7 @@ async function startBot() {
 	bot.use(session());
 
 	bot.use((ctx, next) => {
-		ctx.session = ctx.session ?? {
-			etapa: '',
-			dadosExtraidos: null,
-			falhasEmRevisao: null,
-			indiceFalhaAtual: 0,
-			falhaAtualId: null,
-			reprocessItems: null,
-			reprocessIndice: 0,
-		} as UserSessionData;
+		ctx.session = ctx.session ?? { etapa: '', dadosExtraidos: null } as UserSessionData;
 		return next();
 	});
 
@@ -452,7 +423,12 @@ async function startBot() {
 	});
 
 	bot.command('start', async (ctx) => {
-		await ctx.reply('👋 Bot de notificações ativo!\n\nEnvie a notificação do banco (texto) e eu irei processar.\n\nUse /token para gerar um token de API para o MacroDroid.');
+		await ctx.reply(
+			'👋 Bot de notificações ativo!\n\nEnvie a notificação do banco (texto) e eu irei processar.\n\n' +
+			'/fila — mostra a fila de itens pendentes (inclui inserções que falharam)\n' +
+			'/savenow — salva a fila em disco imediatamente\n' +
+			'/token — gera um token de API para o MacroDroid'
+		);
 	});
 
 	// --- Comando: Gerar token de API ---
@@ -471,6 +447,54 @@ async function startBot() {
 		}
 	});
 
+	// IMPORTANTE: os comandos precisam ser registrados ANTES de bot.on(message('text')),
+	// senão o handler de texto captura "/fila" e "/savenow" como se fossem notificações.
+
+	// --- Comando: Mostrar a fila (itens pendentes + inserções que falharam) ---
+	bot.command('fila', async (ctx) => {
+		const chatId = ctx.chat.id;
+
+		// A fila em memória já inclui os itens restaurados do disco na inicialização.
+		// Aqui só acrescentamos as inserções que falharam (sem duplicar as que já estão na fila).
+		const falhas = await listarFalhas(chatId);
+		adicionarItensNaFila(chatId, falhas.map((f): NovoQueueItem => ({
+			// Reaproveita o ID do item que gerou a falha: se ele ainda estiver na fila, não duplica
+			...(f.origemId ? { id: f.origemId } : {}),
+			// Texto reconstruído (usado apenas para exibição/depuração; a deduplicação usa IDs)
+			texto: `${f.estabelecimento} R$ ${f.valor}`,
+			banco: f.bancoSelecionado,
+			origem: 'falha',
+			dadosProcessados: {
+				estabelecimento: f.estabelecimento,
+				valor: f.valor,
+				data: f.data,
+				banco: f.banco,
+			},
+			falhaId: f.id,
+		})));
+
+		const total = contarItens(chatId);
+		if (total === 0) {
+			await ctx.reply('✅ Nenhum item pendente!');
+			return;
+		}
+
+		await ctx.reply(`📋 *${total}* item(ns) na fila.`, { parse_mode: 'Markdown' });
+		await mostrarProximoItemFila(chatId);
+	});
+
+	// --- Comando: Salvar a fila em disco agora ---
+	bot.command('savenow', async (ctx) => {
+		try {
+			await salvarFilasEmDisco();
+			const total = contarItens(ctx.chat.id);
+			await ctx.reply(`💾 Fila salva em disco: ${total} item(ns).`);
+		} catch (error) {
+			console.error('Erro ao salvar a fila via /savenow:', error);
+			await ctx.reply('❌ Erro ao salvar a fila em disco. Tente novamente.');
+		}
+	});
+
 	// --- Recebe mensagem de texto (notificação direta no Telegram) ---
 	bot.on(message('text'), async (ctx) => {
 		const session: UserSessionData = ctx.session as UserSessionData;
@@ -485,7 +509,7 @@ async function startBot() {
 				armazenarDadosExtraidos(chatId, session, dados);
 			}
 			session.etapa = '';
-			await ctx.reply(`✅ Estabelecimento alterado para: *${texto}*`, { parse_mode: 'Markdown' });
+			await ctx.reply(`✅ Estabelecimento alterado para: *${escaparMarkdown(texto)}*`, { parse_mode: 'Markdown' });
 			if (dados) enviarMenuPrincipal(ctx, dados);
 			return;
 		}
@@ -497,7 +521,7 @@ async function startBot() {
 				armazenarDadosExtraidos(chatId, session, dados);
 			}
 			session.etapa = '';
-			await ctx.reply(`✅ Valor alterado para: *${texto}*`, { parse_mode: 'Markdown' });
+			await ctx.reply(`✅ Valor alterado para: *${escaparMarkdown(texto)}*`, { parse_mode: 'Markdown' });
 			if (dados) enviarMenuPrincipal(ctx, dados);
 			return;
 		}
@@ -510,9 +534,8 @@ async function startBot() {
 			return;
 		}
 
-		armazenarDadosExtraidos(chatId, session, dados);
 		session.etapa = '';
-		enviarMenuPrincipal(ctx, dados);
+		await enfileirarEMostrar(chatId, [{ texto, banco: '', origem: 'manual' }]);
 	});
 
 	// --- Ação: Adicionar ---
@@ -530,27 +553,45 @@ async function startBot() {
 		enviarMenuBancos(ctx, dados);
 	});
 
-	// --- Ação: Ignorar ---
-	bot.action('ignorar', async (ctx) => {
+	// --- Ação: Ignorar / Descartar (descarta o item atual da fila) ---
+	const descartarItemAtual = async (ctx: any, mensagemFila: string, mensagemSemFila: string) => {
+		await ctx.answerCbQuery();
+		const session = ctx.session as UserSessionData;
+		const chatId: number = ctx.chat?.id ?? 0;
+
+		const item = proximoItem(chatId);
+		if (!item) {
+			armazenarDadosExtraidos(chatId, session, null);
+			session.etapa = '';
+			await ctx.reply(mensagemSemFila);
+			return;
+		}
+
+		// Remove do arquivo de falhas o que estiver ligado a este item
+		await removerFalhasLigadas(chatId, item);
+
+		await ctx.reply(mensagemFila);
+		await avancarFila(chatId, session);
+	};
+
+	bot.action('ignorar', (ctx) => descartarItemAtual(ctx, '🗑️ Item ignorado.', '🗑️ Entrada ignorada.'));
+	bot.action('queue_discard', (ctx) => descartarItemAtual(ctx, '🗑️ Item descartado.', '❌ Nenhum item na fila.'));
+
+	// --- Ação: Continuar depois (salva a fila em disco) ---
+	bot.action('queue_later', async (ctx) => {
 		await ctx.answerCbQuery();
 		const session = ctx.session as UserSessionData;
 		const chatId = ctx.chat?.id ?? 0;
 
-		const estaRevisandoFalhas = session.etapa === 'revisando_falhas';
-		const falhaAtualId = session.falhaAtualId;
-
+		// Os itens continuam na fila em memória; só paramos de exibi-los e gravamos o snapshot
+		await salvarFilasEmDisco();
 		armazenarDadosExtraidos(chatId, session, null);
+		session.etapa = '';
 
-		if (estaRevisandoFalhas && falhaAtualId) {
-			// Remove a falha ignorada da lista
-			await removerFalha(chatId, falhaAtualId);
-			session.falhaAtualId = null;
-			await ctx.reply('🗑️ Falha removida da lista.');
-			await mostrarProximaFalha(ctx, session, chatId);
-		} else {
-			session.etapa = '';
-			await ctx.reply('🗑️ Entrada ignorada.');
-		}
+		await ctx.reply(
+			`⏸️ Fila pausada. *${contarItens(chatId)}* item(ns) salvo(s).\nUse /fila para continuar.`,
+			{ parse_mode: 'Markdown' }
+		);
 	});
 
 	// --- Ação: Editar ---
@@ -621,189 +662,49 @@ async function startBot() {
 		}
 
 		const nomeBanco = banco.charAt(0).toUpperCase() + banco.slice(1);
-		const estaRevisandoFalhas = session.etapa === 'revisando_falhas';
-		const falhaAtualId = session.falhaAtualId;
-		const estaReprocessando = reprocessQueues.has(chatId);
+		const item = proximoItem(chatId); // peek: só é removido depois de inserir com sucesso
 
 		try {
 			await inserirNaPlanilha(dados, nomeBanco);
-
-			await ctx.reply(
-				`✅ Inserido com sucesso no *${nomeBanco}*!\n\n` +
-				`🏪 ${dados.estabelecimento}\n` +
-				`💰 ${dados.valor}\n` +
-				`📅 ${dados.data}`,
-				{ parse_mode: 'Markdown' }
-			);
-
-			// Se estava revisando falhas, remove a falha que foi inserida com sucesso
-			if (estaRevisandoFalhas && falhaAtualId) {
-				await removerFalha(chatId, falhaAtualId);
-			}
 		} catch (error) {
 			console.error('Erro ao inserir na planilha:', error);
 			const erroStr = error instanceof Error ? error.message : String(error);
 
-			// Se já estava retentando uma falha, recolocamos na lista
-			if (estaRevisandoFalhas && falhaAtualId) {
-				// A falha original já está na lista — só não removemos ela
-				await ctx.reply(
-					`❌ Erro ao inserir na planilha novamente. O item permanece na lista de falhas.\n` +
-					`Erro: ${erroStr}`
-				);
-			} else {
-				// Primeira falha: registra no arquivo
-				await registrarFalha(chatId, dados, nomeBanco, erroStr);
-				const totalFalhas = await contarFalhas(chatId);
-				await ctx.reply(
-					`❌ Erro ao inserir na planilha: ${erroStr}\n\n` +
-					`📋 A inserção foi salva na fila de falhas. ` +
-					`Você tem *${totalFalhas}* inserção(ões) pendente(s).\n` +
-					`Use /fails para revisar.`,
-					{ parse_mode: 'Markdown' }
-				);
-			}
-		}
-
-		// Limpa os dados atuais
-		armazenarDadosExtraidos(chatId, session, null);
-
-		// Decide para onde voltar após a inserção
-		if (estaRevisandoFalhas) {
-			session.falhaAtualId = null;
-			await mostrarProximaFalha(ctx, session, chatId);
-		} else if (estaReprocessando) {
-			const queue = reprocessQueues.get(chatId);
-			if (queue) {
-				queue.index++;
-				await mostrarProximoReprocessItem(chatId);
-			}
+			armazenarDadosExtraidos(chatId, session, null);
 			session.etapa = '';
-		} else {
-			session.etapa = '';
-		}
-	});
-
-	// --- Comando: Listar inserções falhadas ---
-	bot.command('fails', async (ctx) => {
-		const session = ctx.session as UserSessionData;
-		const chatId = ctx.chat.id;
-
-		const falhas = await listarFalhas(chatId);
-
-		if (falhas.length === 0) {
-			await ctx.reply('✅ Nenhuma inserção falhada pendente!');
+			await tratarErroInsercao(chatId, dados, nomeBanco, erroStr);
 			return;
 		}
 
 		await ctx.reply(
-			`📋 Você tem *${falhas.length}* inserção(ões) falhada(s) pendente(s).`,
+			`✅ Inserido com sucesso no *${escaparMarkdown(nomeBanco)}*!\n\n` +
+			`🏪 ${escaparMarkdown(dados.estabelecimento)}\n` +
+			`💰 ${escaparMarkdown(dados.valor)}\n` +
+			`📅 ${escaparMarkdown(dados.data)}`,
 			{ parse_mode: 'Markdown' }
 		);
 
-		// Armazena a lista na sessão e começa a mostrar uma por uma
-		session.falhasEmRevisao = falhas;
-		session.indiceFalhaAtual = 0;
-		session.etapa = 'revisando_falhas';
-
-		await mostrarFalhaAtual(ctx, session);
-	});
-
-	// --- Ação: Retentar inserção falhada ---
-	bot.action('fails_retry', async (ctx) => {
-		await ctx.answerCbQuery();
-		const session = ctx.session as UserSessionData;
-		const chatId = ctx.chat?.id ?? 0;
-
-		if (!session.falhasEmRevisao || session.indiceFalhaAtual >= session.falhasEmRevisao.length) {
-			await ctx.reply('❌ Nenhuma falha para retentar.');
-			return;
+		// Remove do arquivo de falhas o que estiver ligado a este item
+		if (item) {
+			await removerFalhasLigadas(chatId, item);
 		}
 
-		const falha = session.falhasEmRevisao[session.indiceFalhaAtual];
-
-		// Converte a falha em DadosNotificacao e coloca no menu de confirmação
-		const dados: DadosNotificacao = {
-			estabelecimento: falha.estabelecimento,
-			valor: falha.valor,
-			data: falha.data,
-			banco: falha.banco,
-		};
-
-		session.falhaAtualId = falha.id;
-		armazenarDadosExtraidos(chatId, session, dados);
-		// etapa permanece 'revisando_falhas' para que o handler de inserir_ saiba voltar para a lista
-
-		enviarMenuPrincipal(ctx, dados);
-	});
-
-	// --- Ação: Pular falha atual ---
-	bot.action('fails_skip', async (ctx) => {
-		await ctx.answerCbQuery();
-		const session = ctx.session as UserSessionData;
-		const chatId = ctx.chat?.id ?? 0;
-
-		if (!session.falhasEmRevisao) {
-			await ctx.reply('❌ Nenhuma lista de falhas ativa.');
-			return;
-		}
-
-		session.indiceFalhaAtual++;
-		await mostrarProximaFalha(ctx, session, chatId);
-	});
-
-	// --- Ação: Cancelar revisão de falhas ---
-	bot.action('fails_cancel', async (ctx) => {
-		await ctx.answerCbQuery();
-		const session = ctx.session as UserSessionData;
-
-		session.falhasEmRevisao = null;
-		session.indiceFalhaAtual = 0;
-		session.falhaAtualId = null;
-		session.etapa = '';
-		await ctx.reply('🔚 Revisão de falhas encerrada.');
-	});
-	// --- Ação: Descartar item do reprocessamento ---
-	bot.action('reprocess_discard', async (ctx) => {
-		await ctx.answerCbQuery();
-		const chatId = ctx.chat?.id ?? 0;
-		const session = ctx.session as UserSessionData;
-
-		armazenarDadosExtraidos(chatId, session, null);
-
-		const queue = reprocessQueues.get(chatId);
-		if (!queue) {
-			await ctx.reply('❌ Nenhuma fila de reprocessamento ativa.');
-			return;
-		}
-
-		await ctx.reply('🗑️ Item descartado.');
-		queue.index++;
-		await mostrarProximoReprocessItem(chatId);
-	});
-
-	// --- Ação: Continuar depois (salva restantes como falhas) ---
-	bot.action('reprocess_later', async (ctx) => {
-		await ctx.answerCbQuery();
-		const chatId = ctx.chat?.id ?? 0;
-		const session = ctx.session as UserSessionData;
-
-		armazenarDadosExtraidos(chatId, session, null);
-
-		const salvos = await salvarRestantesComoFalhas(chatId);
-
-		if (salvos > 0) {
-			await ctx.reply(
-				`⏸️ Reprocessamento pausado.\n\n` +
-				`📋 *${salvos}* item(ns) salvo(s) na fila de falhas.\n` +
-				`Use /fails para revisar quando quiser.`,
-				{ parse_mode: 'Markdown' }
-			);
+		if (item) {
+			await avancarFila(chatId, session);
 		} else {
-			await ctx.reply('⏸️ Reprocessamento pausado. Nenhum item restante para salvar.');
+			armazenarDadosExtraidos(chatId, session, null);
+			session.etapa = '';
 		}
+	});
 
-		session.etapa = '';
+	// --- Tratamento global de erros: nenhum erro de handler deve passar em silêncio ---
+	bot.catch(async (error, ctx) => {
+		console.error(`Erro não tratado ao processar update "${ctx.updateType}":`, error);
+		try {
+			await ctx.reply('❌ Ocorreu um erro inesperado. Tente novamente ou use /fila para retomar a fila.');
+		} catch (erroResposta) {
+			console.error('Não foi possível avisar o usuário sobre o erro:', erroResposta);
+		}
 	});
 
 	// Webhook será configurado pelo servidor Express
@@ -849,24 +750,19 @@ export {
 	getWebhookCallback,
 	bot,
 	processarNotificacaoExterna,
+	iniciarFilaReprocess,
 	inserirNaPlanilha,
+	mostrarProximoItemFila,
 	extrairValor,
 	extrairData,
 	extrairEstabelecimento,
 	extrairBanco,
 	processarNotificacao,
 	formatarResumo,
-	formatarResumoFalha,
 	converterParaSheetData,
 	obterDadosExtraidos,
 	armazenarDadosExtraidos,
-	mostrarFalhaAtual,
-	mostrarProximaFalha,
-	iniciarFilaReprocess,
-	mostrarProximoReprocessItem,
-	salvarRestantesComoFalhas,
-	reprocessQueues,
 	pendingData,
 	MESES_NOMES,
 };
-export type { DadosNotificacao, UserSessionData, PendingReprocessItem };
+export type { DadosNotificacao, UserSessionData };

@@ -58,10 +58,31 @@ jest.mock('../../src/services/tokenService', () => ({
 	getTokenFilePath: jest.fn().mockReturnValue('/tmp/tokens.json'),
 }));
 
+jest.mock('../../src/services/queueService', () => ({
+	adicionarItensNaFila: jest.fn().mockReturnValue(1),
+	proximoItem: jest.fn().mockReturnValue(null),
+	removerPrimeiroItem: jest.fn().mockReturnValue(null),
+	atualizarPrimeiroItem: jest.fn().mockReturnValue(null),
+	contarItens: jest.fn().mockReturnValue(0),
+	salvarFilasEmDisco: jest.fn().mockResolvedValue(0),
+	salvarSeModificada: jest.fn().mockResolvedValue(false),
+	carregarFilasDoDisco: jest.fn().mockResolvedValue(0),
+	iniciarPersistenciaPeriodica: jest.fn(),
+	haAlteracoesNaoSalvas: jest.fn().mockReturnValue(false),
+	limparFila: jest.fn(),
+	isDuplicata: jest.fn().mockReturnValue(false),
+	obterFila: jest.fn().mockReturnValue([]),
+	gerarIdQueue: jest.fn().mockReturnValue('q-mock'),
+	getQueueDir: jest.fn().mockReturnValue('/tmp/queue'),
+	getQueueFilePath: jest.fn().mockReturnValue('/tmp/queue/123.json'),
+	filas: new Map(),
+}));
+
 jest.mock('../../src/services/failedInsertionsService', () => ({
 	registrarFalha: jest.fn().mockResolvedValue({ id: 'mock-id' }),
 	listarFalhas: jest.fn().mockResolvedValue([]),
 	removerFalha: jest.fn().mockResolvedValue(true),
+	removerFalhasDoItem: jest.fn().mockResolvedValue(0),
 	contarFalhas: jest.fn().mockResolvedValue(0),
 	getFailedInsertionsDir: jest.fn().mockReturnValue('/tmp/failed_insertions'),
 	getFailedInsertionsFilePath: jest.fn().mockReturnValue('/tmp/failed_insertions/123.json'),

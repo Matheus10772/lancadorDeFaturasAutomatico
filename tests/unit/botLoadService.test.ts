@@ -12,6 +12,7 @@ jest.mock('telegraf', () => ({
 		command: jest.fn(),
 		on: jest.fn(),
 		action: jest.fn(),
+		catch: jest.fn(),
 		launch: jest.fn(),
 		telegram: { sendMessage: jest.fn().mockResolvedValue({}) },
 	})),
@@ -45,10 +46,31 @@ jest.mock('../../src/services/tokenService', () => ({
 }));
 
 // Mock do failedInsertionsService
+jest.mock('../../src/services/queueService', () => ({
+	adicionarItensNaFila: jest.fn().mockReturnValue(1),
+	proximoItem: jest.fn().mockReturnValue(null),
+	removerPrimeiroItem: jest.fn().mockReturnValue(null),
+	atualizarPrimeiroItem: jest.fn().mockReturnValue(null),
+	contarItens: jest.fn().mockReturnValue(0),
+	salvarFilasEmDisco: jest.fn().mockResolvedValue(0),
+	salvarSeModificada: jest.fn().mockResolvedValue(false),
+	carregarFilasDoDisco: jest.fn().mockResolvedValue(0),
+	iniciarPersistenciaPeriodica: jest.fn(),
+	haAlteracoesNaoSalvas: jest.fn().mockReturnValue(false),
+	limparFila: jest.fn(),
+	isDuplicata: jest.fn().mockReturnValue(false),
+	obterFila: jest.fn().mockReturnValue([]),
+	gerarIdQueue: jest.fn().mockReturnValue('q-mock'),
+	getQueueDir: jest.fn().mockReturnValue('/tmp/queue'),
+	getQueueFilePath: jest.fn().mockReturnValue('/tmp/queue/123.json'),
+	filas: new Map(),
+}));
+
 jest.mock('../../src/services/failedInsertionsService', () => ({
 	registrarFalha: jest.fn().mockResolvedValue({ id: 'mock-id', estabelecimento: '', valor: '', data: '', banco: null, bancoSelecionado: '', falhouEm: '', erro: '' }),
 	listarFalhas: jest.fn().mockResolvedValue([]),
 	removerFalha: jest.fn().mockResolvedValue(true),
+	removerFalhasDoItem: jest.fn().mockResolvedValue(0),
 	contarFalhas: jest.fn().mockResolvedValue(0),
 	getFailedInsertionsDir: jest.fn().mockReturnValue('/tmp/failed_insertions'),
 	getFailedInsertionsFilePath: jest.fn().mockReturnValue('/tmp/failed_insertions/123.json'),
@@ -64,6 +86,8 @@ import {
 	formatarResumo,
 	converterParaSheetData,
 	MESES_NOMES,
+	startBot,
+	bot,
 } from '../../src/services/botLoadService';
 import type { DadosNotificacao } from '../../src/services/botLoadService';
 import { DateTime } from 'luxon';
@@ -120,7 +144,6 @@ describe('extrairData', () => {
 
 	it('deve retornar data atual quando não encontra nenhuma data', () => {
 		const resultado = extrairData('Mensagem sem data');
-		const agora = DateTime.now().toFormat('dd/MM/yyyy hh:mm');
 		// Como a data pode mudar entre a execução, verificamos apenas o formato
 		expect(resultado).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
 	});
@@ -332,6 +355,18 @@ describe('formatarResumo', () => {
 		expect(resumo).toContain('Não identificado');
 	});
 
+	it('deve escapar caracteres especiais do Markdown nos dados', () => {
+		const dados: DadosNotificacao = {
+			estabelecimento: 'IFD*RESTAURANTE_X',
+			valor: 'R$ 10,00',
+			data: '01/01/2027',
+			banco: 'Itaú',
+		};
+		const resumo = formatarResumo(dados);
+
+		expect(resumo).toContain('IFD\\*RESTAURANTE\\_X');
+	});
+
 	it('deve usar formatação Markdown', () => {
 		const dados: DadosNotificacao = {
 			estabelecimento: 'Loja X',
@@ -413,6 +448,46 @@ describe('converterParaSheetData', () => {
 		expect(resultado.ano).toBe(DateTime.now().toFormat('yyyy'));
 	});
 
+	it('deve ignorar a hora quando a data vem como "dd/MM/yyyy HH:mm" (data padrão de extrairData)', () => {
+		const dados: DadosNotificacao = { estabelecimento: 'Loja', valor: 'R$ 10,00', data: '15/10/2026 09:13', banco: 'Nubank' };
+
+		const resultado = converterParaSheetData(dados, 'Nubank');
+
+		expect(resultado.mes).toBe('outubro');
+		expect(resultado.ano).toBe('2026');
+	});
+
+	it('deve converter ano de 2 dígitos para 4 dígitos ("18/09/26" → 2026)', () => {
+		const dados: DadosNotificacao = { estabelecimento: 'Loja', valor: 'R$ 10,00', data: '18/09/26', banco: null };
+
+		expect(converterParaSheetData(dados, 'Nubank').ano).toBe('2026');
+	});
+
+	it('deve usar mês/ano atuais quando a data não é reconhecível', () => {
+		const dados: DadosNotificacao = { estabelecimento: 'Loja', valor: 'R$ 10,00', data: 'Não identificada', banco: null };
+
+		const resultado = converterParaSheetData(dados, 'Nubank');
+
+		expect(resultado.mes).toBe(MESES_NOMES[DateTime.now().month - 1]);
+		expect(resultado.ano).toBe(DateTime.now().toFormat('yyyy'));
+	});
+
+	it('deve lançar erro para mês inválido', () => {
+		const dados: DadosNotificacao = { estabelecimento: 'Loja', valor: 'R$ 10,00', data: '10/13/2026', banco: null };
+
+		expect(() => converterParaSheetData(dados, 'Nubank')).toThrow('Mês inválido');
+	});
+
+	it('a data padrão gerada por extrairData deve ser convertível', () => {
+		const data = extrairData('Mensagem sem data')!;
+		const dados: DadosNotificacao = { estabelecimento: 'Loja', valor: 'R$ 10,00', data, banco: null };
+
+		const resultado = converterParaSheetData(dados, 'Nubank');
+
+		expect(MESES_NOMES).toContain(resultado.mes);
+		expect(resultado.ano).toMatch(/^\d{4}$/);
+	});
+
 	it('deve usar o banco passado como parâmetro, não o do dados', () => {
 		const dados: DadosNotificacao = {
 			estabelecimento: 'Loja',
@@ -446,5 +521,36 @@ describe('MESES_NOMES', () => {
 			'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
 		];
 		expect(MESES_NOMES).toEqual(esperado);
+	});
+});
+
+// ==========================================
+// startBot — ordem de registro dos handlers
+// ==========================================
+describe('startBot', () => {
+	it('deve registrar /fails ANTES do handler de texto (senão "/fails" é tratado como notificação)', async () => {
+		await startBot();
+
+		const commandMock = bot.command as unknown as jest.Mock;
+		const onMock = bot.on as unknown as jest.Mock;
+
+		const idxFails = commandMock.mock.calls.findIndex(([nome]) => nome === 'fails');
+		const idxTexto = onMock.mock.calls.findIndex(([filtro]) => filtro === 'message:text');
+
+		expect(idxFails).toBeGreaterThanOrEqual(0);
+		expect(idxTexto).toBeGreaterThanOrEqual(0);
+		expect(commandMock.mock.invocationCallOrder[idxFails])
+			.toBeLessThan(onMock.mock.invocationCallOrder[idxTexto]);
+	});
+
+	it('deve registrar as actions da fila e não registrar as actions antigas', async () => {
+		await startBot();
+
+		const nomes = (bot.action as unknown as jest.Mock).mock.calls.map(([nome]) => nome);
+
+		expect(nomes).toEqual(expect.arrayContaining(['queue_discard', 'queue_later', 'ignorar', 'adicionar', 'editar']));
+		for (const antiga of ['fails_retry', 'fails_skip', 'fails_cancel', 'reprocess_discard', 'reprocess_later']) {
+			expect(nomes).not.toContain(antiga);
+		}
 	});
 });

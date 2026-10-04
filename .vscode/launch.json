@@ -6,10 +6,20 @@
       "request": "launch",
       "name": "Iniciar com ts-node-dev",
       "skipFiles": ["<node_internals>/**"],
-      "program": "${workspaceFolder}/index.ts",
-      "preLaunchTask": "tsc: build - tsconfig.json",
+      "preLaunchTask": "tsc: build - tsconfig.build.json",
       "outFiles": [
         "${workspaceFolder}/dist/**/*.js"
+      ],
+      // O projeto é aberto por um caminho com symlink
+      // (~/Documentos/Projetos GitHub Pessoal -> /media/matheus/UnidadeDeTrabalho/Projetos GitHub Pessoal).
+      // Para os breakpoints vincularem, o Node precisa carregar os arquivos pelo MESMO caminho do editor:
+      // - as flags --preserve-symlinks* impedem o Node de trocar o caminho pelo real;
+      // - o script vai como caminho ABSOLUTO aqui (e não em "program"), porque o js-debug converte
+      //   "program" em caminho relativo ("./dist/index.js"), que o sistema resolve pelo caminho real.
+      "runtimeArgs": [
+        "--preserve-symlinks",
+        "--preserve-symlinks-main",
+        "${workspaceFolder}/dist/index.js"
       ]
     }
   ]
